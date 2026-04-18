@@ -3,3 +3,4 @@ supabase==2.3.7
 python-dotenv
 requests
 cloudscraper
+beautifulsoup4
