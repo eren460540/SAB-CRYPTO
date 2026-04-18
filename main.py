@@ -3,25 +3,18 @@ import discord
 from discord import app_commands
 from discord.ext import tasks
 import requests
-from supabase import create_client, Client
-from dotenv import load_dotenv
 import cloudscraper
 from bs4 import BeautifulSoup
+from supabase import create_client, Client
+from dotenv import load_dotenv
 import asyncio
 
-# --- LOAD ENVIRONMENT VARIABLES ---
+# --- SETUP ---
 load_dotenv()
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
-TOKEN = os.environ.get("BOT_TOKEN")
-
-ADMIN_ROLE_ID = int(os.environ.get("ADMIN_ROLE_ID", 0))
-TICKET_CATEGORY_ID = int(os.environ.get("TICKET_CATEGORY_ID", 0))
-
-# --- DATABASE SETUP ---
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-
-# --- CONSTANTS & CONFIG ---
+supabase: Client = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
+TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ROLE_ID = int(os.getenv("ADMIN_ROLE_ID", 0))
+TICKET_CATEGORY_ID = int(os.getenv("TICKET_CATEGORY_ID", 0))
 SAB_EMOJI = "<:SAB:1495012520510099577>"
 
 COINS = {
@@ -37,25 +30,49 @@ COINS = {
     "TANG": {"name": "Tang Tang Keletang", "ref": "pepe", "emoji": "<:TANG:1494995850831728701>"}
 }
 
-def get_or_create_profile(user_id: str):
-    # Fixed table name reference to match SQL editor
+# --- HELPERS ---
+async def coin_autocomplete(interaction: discord.Interaction, current: str):
+    return [app_commands.Choice(name=f"{v['emoji']} {k}", value=k) 
+            for k, v in COINS.items() if current.lower() in k.lower()][:25]
+
+def get_profile(user_id: str):
     res = supabase.table("profiles").select("*").eq("user_id", user_id).execute()
     if not res.data:
-        default_portfolio = {key: 0.0 for key in COINS.keys()}
-        new_user = {"user_id": user_id, "sab_balance": 0.0, "portfolio": default_portfolio}
-        supabase.table("profiles").insert(new_user).execute()
-        return new_user
+        p = {"user_id": user_id, "sab_balance": 0.0, "portfolio": {k: 0.0 for k in COINS}}
+        supabase.table("profiles").insert(p).execute()
+        return p
     return res.data[0]
 
-def update_profile(user_id: str, updates: dict):
-    supabase.table("profiles").update(updates).eq("user_id", user_id).execute()
+# --- CHART BUTTONS ---
+class ChartView(discord.ui.View):
+    def __init__(self, coin_key, prices):
+        super().__init__(timeout=60)
+        self.coin_key = coin_key
+        self.prices = prices
+
+    def create_embed(self, timeframe):
+        data = COINS[self.coin_key]
+        p_data = self.prices.get(data['ref'], {"eur": 0, "eur_24h_change": 0})
+        embed = discord.Embed(title=f"{data['emoji']} {data['name']} Market ({timeframe})", color=0x2b2d31)
+        embed.add_field(name="Current Price", value=f"€{p_data['eur']:,.4f}", inline=True)
+        embed.add_field(name="24h Change", value=f"{p_data.get('eur_24h_change', 0):+.2f}%", inline=True)
+        # Using Sparkline as a dynamic chart placeholder
+        embed.set_image(url=f"https://www.coingecko.com/coins/{data['ref']}/sparkline.png")
+        embed.set_footer(text=f"Last updated via API • Timeframe: {timeframe}")
+        return embed
+
+    @discord.ui.button(label="24H", style=discord.ButtonStyle.blurple)
+    async def h24(self, it, btn): await it.response.edit_message(embed=self.create_embed("24H"))
+    @discord.ui.button(label="7D", style=discord.ButtonStyle.gray)
+    async def d7(self, it, btn): await it.response.edit_message(embed=self.create_embed("7D"))
+    @discord.ui.button(label="1M", style=discord.ButtonStyle.gray)
+    async def m1(self, it, btn): await it.response.edit_message(embed=self.create_embed("1M"))
+    @discord.ui.button(label="1Y", style=discord.ButtonStyle.gray)
+    async def y1(self, it, btn): await it.response.edit_message(embed=self.create_embed("1Y"))
 
 class SAB_Bot(discord.Client):
     def __init__(self):
-        intents = discord.Intents.default()
-        intents.members = True
-        intents.message_content = True
-        super().__init__(intents=intents)
+        super().__init__(intents=discord.Intents.all())
         self.tree = app_commands.CommandTree(self)
         self.market_prices = {}
 
@@ -63,152 +80,103 @@ class SAB_Bot(discord.Client):
         self.update_prices.start()
         await self.tree.sync()
 
-    @tasks.loop(seconds=60) # Increased to 60s to avoid API rate limits
+    @tasks.loop(seconds=60)
     async def update_prices(self):
         try:
             ids = ",".join([c["ref"] for c in COINS.values()])
-            url = f"https://api.coingecko.com/api/v3/simple/price?ids={ids}&vs_currencies=eur&include_24hr_change=true"
-            response = requests.get(url, timeout=5)
-            if response.status_code == 200:
-                self.market_prices = response.json()
-        except Exception as e:
-            print(f"Price update failed: {e}")
+            r = requests.get(f"https://api.coingecko.com/api/v3/simple/price?ids={ids}&vs_currencies=eur&include_24hr_change=true")
+            if r.status_code == 200: self.market_prices = r.json()
+        except: pass
 
 client = SAB_Bot()
 
-# --- MARKET COMMAND ---
-@client.tree.command(name="coins", description="View live SAB Market prices")
-async def coins(interaction: discord.Interaction):
-    if not client.market_prices:
-        return await interaction.response.send_message("⏳ Loading market data...", ephemeral=True)
+# --- THE ELDORADO SEARCH (/value) ---
+@client.tree.command(name="value", description="Find average Eldorado price for a Brainrot item")
+async def value(interaction: discord.Interaction, item_name: str):
+    await interaction.response.defer() # Scaping takes time
     
-    embed = discord.Embed(title="📈 SAB Market Ticker", color=0x2b2d31)
-    sorted_coins = sorted(COINS.items(), key=lambda x: client.market_prices.get(x[1]['ref'], {}).get('eur', 0), reverse=True)
+    search_query = item_name.replace(" ", "+")
+    url = f"https://www.eldorado.gg/steal-a-brainrot-brainrots/i/259?searchQuery={search_query}&gamePageOfferIndex=1&gamePageOfferSize=25"
     
-    desc = ""
-    for i, (sym, data) in enumerate(sorted_coins, 1):
-        p = client.market_prices.get(data['ref'], {"eur": 0, "eur_24h_change": 0})
-        price = p['eur']
-        change = p.get('eur_24h_change') or 0.0
-        trend = "🟢" if change >= 0 else "🔴"
-        price_str = f"€{price:.8f}" if price < 0.1 else f"€{price:,.2f}"
-        desc += f"`{i}.` {data['emoji']} **{sym}** ➔ **{price_str}** | {trend} `{change:+.2f}%`\n"
-    
-    embed.description = desc
-    embed.set_footer(text="Updates every 60 seconds • Prices in EUR")
-    await interaction.response.send_message(embed=embed)
+    try:
+        scraper = cloudscraper.create_scraper()
+        response = scraper.get(url)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # This selector targets the price elements on Eldorado
+        price_elements = soup.select('.price-amount')[:25]
+        
+        if not price_elements:
+            return await interaction.followup.send(f"❌ No listings found for `{item_name}`.")
+            
+        prices = [float(p.get_text().replace('$', '').replace(',', '')) for p in price_elements]
+        avg_price = sum(prices) / len(prices)
+        
+        embed = discord.Embed(title="🔎 Eldorado Value Search", color=0x2b2d31)
+        embed.add_field(name="Item", value=f"`{item_name}`", inline=True)
+        embed.add_field(name="Listings Analyzed", value=len(prices), inline=True)
+        embed.add_field(name="Average Market Price", value=f"**${avg_price:,.2f}**", inline=False)
+        embed.set_footer(text="Data scraped from Eldorado.gg")
+        
+        await interaction.followup.send(embed=embed)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error scraping Eldorado: {str(e)}")
 
-# --- PROFILE COMMAND ---
-@client.tree.command(name="profile", description="Check your balance and holdings")
-async def profile(interaction: discord.Interaction, user: discord.Member = None):
-    target = user or interaction.user
-    p = get_or_create_profile(str(target.id))
-    
-    embed = discord.Embed(title=f"🏦 Vault: {target.display_name}", color=0xFFD700)
-    embed.set_thumbnail(url=target.display_avatar.url)
-    embed.add_field(name="Wallet Balance", value=f"**{p['sab_balance']:,.2f}** {SAB_EMOJI}", inline=False)
-    
-    holdings = []
-    for k, v in p['portfolio'].items():
-        if v > 0:
-            price = client.market_prices.get(COINS[k]['ref'], {}).get('eur', 0)
-            value = price * v
-            holdings.append(f"{COINS[k]['emoji']} **{k}:** {v:,.4f} *(€{value:,.2f})*")
-    
-    embed.add_field(name="Current Holdings", value="\n".join(holdings) if holdings else "*No coins owned*", inline=False)
-    await interaction.response.send_message(embed=embed)
-
-# --- TRADE COMMANDS ---
-@client.tree.command(name="buy", description="Purchase coins with SAB")
+# --- TRADING WITH AUTOCOMPLETE ---
+@client.tree.command(name="buy", description="Buy coins with SAB balance")
+@app_commands.autocomplete(coin=coin_autocomplete)
 async def buy(interaction: discord.Interaction, coin: str, amount: float):
-    coin = coin.upper()
-    if coin not in COINS or amount <= 0:
-        return await interaction.response.send_message("❌ Invalid coin or amount.", ephemeral=True)
-    
+    if coin not in COINS: return await interaction.response.send_message("❌ Pick a coin from the list!", ephemeral=True)
+    p = get_profile(str(interaction.user.id))
     price = client.market_prices.get(COINS[coin]['ref'], {}).get('eur', 0)
     cost = price * amount
-    p = get_or_create_profile(str(interaction.user.id))
     
-    if p['sab_balance'] < cost:
-        return await interaction.response.send_message(f"❌ Insufficient SAB. Need {cost:,.2f} {SAB_EMOJI}.", ephemeral=True)
-
+    if p['sab_balance'] < cost: return await interaction.response.send_message(f"❌ You need {cost:,.2f} SAB.", ephemeral=True)
+    
     p['portfolio'][coin] = p['portfolio'].get(coin, 0) + amount
-    update_profile(str(interaction.user.id), {"sab_balance": p['sab_balance'] - cost, "portfolio": p['portfolio']})
-    await interaction.response.send_message(f"✅ Successfully bought **{amount} {coin}** for {cost:,.2f} {SAB_EMOJI}!")
+    supabase.table("profiles").update({"sab_balance": p['sab_balance'] - cost, "portfolio": p['portfolio']}).eq("user_id", str(interaction.user.id)).execute()
+    await interaction.response.send_message(f"✅ Bought **{amount} {coin}** for {cost:,.2f} {SAB_EMOJI}")
 
-@client.tree.command(name="sell", description="Sell coins for SAB")
+@client.tree.command(name="sell", description="Sell your coins for SAB")
+@app_commands.autocomplete(coin=coin_autocomplete)
 async def sell(interaction: discord.Interaction, coin: str, amount: float):
-    coin = coin.upper()
-    if coin not in COINS or amount <= 0:
-        return await interaction.response.send_message("❌ Invalid coin or amount.", ephemeral=True)
+    if coin not in COINS: return await interaction.response.send_message("❌ Pick a coin from the list!", ephemeral=True)
+    p = get_profile(str(interaction.user.id))
+    if p['portfolio'].get(coin, 0) < amount: return await interaction.response.send_message("❌ Not enough coins.", ephemeral=True)
     
-    p = get_or_create_profile(str(interaction.user.id))
-    current_holding = p['portfolio'].get(coin, 0)
-    
-    if current_holding < amount:
-        return await interaction.response.send_message(f"❌ You only have **{current_holding} {coin}**.", ephemeral=True)
-
     price = client.market_prices.get(COINS[coin]['ref'], {}).get('eur', 0)
     gain = price * amount
     
-    p['portfolio'][coin] = current_holding - amount
-    update_profile(str(interaction.user.id), {"sab_balance": p['sab_balance'] + gain, "portfolio": p['portfolio']})
-    await interaction.response.send_message(f"✅ Sold **{amount} {coin}** for {gain:,.2f} {SAB_EMOJI}!")
+    p['portfolio'][coin] -= amount
+    supabase.table("profiles").update({"sab_balance": p['sab_balance'] + gain, "portfolio": p['portfolio']}).eq("user_id", str(interaction.user.id)).execute()
+    await interaction.response.send_message(f"✅ Sold **{amount} {coin}** for {gain:,.2f} {SAB_EMOJI}")
 
-# --- UTILITY COMMANDS ---
-@client.tree.command(name="chart", description="View live chart of a coin")
+# --- CHART WITH BUTTONS ---
+@client.tree.command(name="chart", description="Show coin info with interactive chart buttons")
+@app_commands.autocomplete(coin=coin_autocomplete)
 async def chart(interaction: discord.Interaction, coin: str):
-    coin = coin.upper()
-    if coin not in COINS:
-        return await interaction.response.send_message("❌ Invalid coin.", ephemeral=True)
-    
-    ref = COINS[coin]['ref']
-    url = f"https://www.coingecko.com/en/coins/{ref}"
-    embed = discord.Embed(title=f"📊 {COINS[coin]['name']} ({coin})", url=url, color=0x3498db)
-    embed.description = f"Click the link above to view the live price chart for **{COINS[coin]['name']}**."
+    if coin not in COINS: return await interaction.response.send_message("❌ Pick a coin from the list!", ephemeral=True)
+    view = ChartView(coin, client.market_prices)
+    await interaction.response.send_message(embed=view.create_embed("24H"), view=view)
+
+# --- STANDARDS ---
+@client.tree.command(name="profile", description="View your vault")
+async def profile(interaction: discord.Interaction, user: discord.Member = None):
+    target = user or interaction.user
+    p = get_profile(str(target.id))
+    embed = discord.Embed(title=f"🏦 Vault: {target.display_name}", color=0xFFD700)
+    embed.add_field(name="SAB Balance", value=f"{p['sab_balance']:,.2f} {SAB_EMOJI}", inline=False)
+    holdings = [f"{COINS[k]['emoji']} {k}: {v:,.2f}" for k,v in p['portfolio'].items() if v > 0]
+    embed.add_field(name="Portfolio", value="\n".join(holdings) if holdings else "Empty", inline=False)
     await interaction.response.send_message(embed=embed)
 
-@client.tree.command(name="withdraw", description="Request to withdraw SAB balance")
+@client.tree.command(name="withdraw", description="Request withdrawal")
 async def withdraw(interaction: discord.Interaction, amount: float):
-    p = get_or_create_profile(str(interaction.user.id))
-    if amount <= 0 or p['sab_balance'] < amount:
-        return await interaction.response.send_message("❌ Invalid amount or insufficient balance.", ephemeral=True)
-    
-    guild = interaction.guild
-    cat = guild.get_channel(TICKET_CATEGORY_ID)
-    if not cat:
-        return await interaction.response.send_message("❌ Ticket category not found. Contact staff.", ephemeral=True)
+    p = get_profile(str(interaction.user.id))
+    if p['sab_balance'] < amount: return await interaction.response.send_message("❌ Low balance.", ephemeral=True)
+    supabase.table("profiles").update({"sab_balance": p['sab_balance'] - amount}).eq("user_id", str(interaction.user.id)).execute()
+    chan = await interaction.guild.create_text_channel(f"withdraw-{interaction.user.name}", category=interaction.guild.get_channel(TICKET_CATEGORY_ID))
+    await chan.send(f"⚠️ **Request:** {interaction.user.mention} wants to withdraw {amount} {SAB_EMOJI}")
+    await interaction.response.send_message("✅ Ticket created.", ephemeral=True)
 
-    # Pre-deduct to prevent double spending
-    update_profile(str(interaction.user.id), {"sab_balance": p['sab_balance'] - amount})
-    
-    chan = await guild.create_text_channel(f"withdraw-{interaction.user.name}", category=cat)
-    await chan.send(f"⚠️ **WITHDRAWAL REQUEST**\nUser: {interaction.user.mention}\nAmount: **{amount} {SAB_EMOJI}**\nStaff: Process this request manually.")
-    await interaction.response.send_message(f"✅ Request sent. Ticket: {chan.mention}", ephemeral=True)
-
-@client.tree.command(name="deposit", description="Open a deposit ticket")
-async def deposit(interaction: discord.Interaction):
-    guild = interaction.guild
-    cat = guild.get_channel(TICKET_CATEGORY_ID)
-    admin = guild.get_role(ADMIN_ROLE_ID)
-    
-    overwrites = {
-        guild.default_role: discord.PermissionOverwrite(view_channel=False),
-        interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True),
-        admin: discord.PermissionOverwrite(view_channel=True, send_messages=True)
-    }
-    
-    chan = await guild.create_text_channel(f"deposit-{interaction.user.name}", category=cat, overwrites=overwrites)
-    await interaction.response.send_message(f"✅ Deposit Ticket: {chan.mention}", ephemeral=True)
-    await chan.send(f"{interaction.user.mention} Please provide proof of your deposit here for staff review.")
-
-# --- ADMIN COMMANDS ---
-@client.tree.command(name="add_sab", description="Admin Only: Add SAB to a user")
-@app_commands.checks.has_role(ADMIN_ROLE_ID)
-async def add_sab(interaction: discord.Interaction, user: discord.Member, amount: float):
-    p = get_or_create_profile(str(user.id))
-    update_profile(str(user.id), {"sab_balance": p['sab_balance'] + amount})
-    await interaction.response.send_message(f"✅ Added {amount} {SAB_EMOJI} to {user.name}'s vault.")
-
-if __name__ == "__main__":
-    client.run(TOKEN)
+client.run(TOKEN)
