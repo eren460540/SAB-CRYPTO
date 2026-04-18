@@ -1,4 +1,4 @@
-import os, discord, requests, cloudscraper, json
+import os, discord, requests, cloudscraper, json, urllib.parse
 from discord import app_commands, ui
 from discord.ext import tasks
 from bs4 import BeautifulSoup
@@ -11,16 +11,16 @@ TOKEN = os.getenv("BOT_TOKEN")
 SAB_EMOJI = "<:SAB:1495012520510099577>"
 
 COINS = {
-    "ELEPHANT": {"name": "Elephant", "ref": "bitcoin", "color": "rgb(247, 147, 26)", "emoji": "<:ELEPHANT:1494995440213688340>"},
-    "MEOWL": {"name": "Meowl", "ref": "ethereum", "color": "rgb(98, 126, 234)", "emoji": "<:MEOWL:1494995595222454366>"},
-    "GARAMA": {"name": "Garama", "ref": "binancecoin", "color": "rgb(243, 186, 47)", "emoji": "<:GARAMA:1494995007910842418>"},
-    "SKIBIDI": {"name": "Skibidi", "ref": "solana", "color": "rgb(20, 241, 149)", "emoji": "<:SKIBIDI:1494995556030746714>"},
-    "DRAG": {"name": "Dragon", "ref": "ripple", "color": "rgb(35, 41, 47)", "emoji": "<:DRAG:1494995236068397127>"},
-    "KETCHURU": {"name": "Ketchuru", "ref": "tron", "color": "rgb(255, 0, 19)", "emoji": "<:KETCHURU:1494996298733191308>"},
-    "TICTAC": {"name": "Tictac", "ref": "cardano", "color": "rgb(0, 51, 173)", "emoji": "<:TICTAC:1494996594473308190>"},
-    "SUPREME": {"name": "La Supreme", "ref": "dogecoin", "color": "rgb(194, 166, 51)", "emoji": "<:SUPREME:1494997175531470960>"},
-    "KETUPAT": {"name": "Ketupat", "ref": "shiba-inu", "color": "rgb(255, 0, 0)", "emoji": "<:KETUPAT:1494996070303006793>"},
-    "TANG": {"name": "Tang", "ref": "pepe", "color": "rgb(61, 148, 33)", "emoji": "<:TANG:1494995850831728701>"}
+    "ELEPHANT": {"name": "Elephant", "ref": "bitcoin", "color": "#f7931a", "emoji": "<:ELEPHANT:1494995440213688340>"},
+    "MEOWL": {"name": "Meowl", "ref": "ethereum", "color": "#627eea", "emoji": "<:MEOWL:1494995595222454366>"},
+    "GARAMA": {"name": "Garama", "ref": "binancecoin", "color": "#f3ba2f", "emoji": "<:GARAMA:1494995007910842418>"},
+    "SKIBIDI": {"name": "Skibidi", "ref": "solana", "color": "#14f195", "emoji": "<:SKIBIDI:1494995556030746714>"},
+    "DRAG": {"name": "Dragon", "ref": "ripple", "color": "#23292f", "emoji": "<:DRAG:1494995236068397127>"},
+    "KETCHURU": {"name": "Ketchuru", "ref": "tron", "color": "#ff0013", "emoji": "<:KETCHURU:1494996298733191308>"},
+    "TICTAC": {"name": "Tictac", "ref": "cardano", "color": "#0033ad", "emoji": "<:TICTAC:1494996594473308190>"},
+    "SUPREME": {"name": "La Supreme", "ref": "dogecoin", "color": "#c2a633", "emoji": "<:SUPREME:1494997175531470960>"},
+    "KETUPAT": {"name": "Ketupat", "ref": "shiba-inu", "color": "#ff0000", "emoji": "<:KETUPAT:1494996070303006793>"},
+    "TANG": {"name": "Tang", "ref": "pepe", "color": "#3d9421", "emoji": "<:TANG:1494995850831728701>"}
 }
 
 # --- HELPERS ---
@@ -33,7 +33,6 @@ def get_profile(uid: str):
     return res.data[0]
 
 async def coin_autocomplete(it: discord.Interaction, current: str):
-    # EMOJIS REMOVED FROM PICKER
     return [app_commands.Choice(name=k, value=k) for k in COINS if current.lower() in k.lower()][:25]
 
 # --- TRADING MODAL ---
@@ -60,8 +59,7 @@ class TradeModal(ui.Modal):
             self.p['sab_balance'] -= sab_to_spend
             self.p['portfolio'][self.coin] = self.p['portfolio'].get(self.coin, 0) + coin_amt
             msg = f"✅ Bought **{coin_amt:,.6f} {self.coin}** for **{sab_to_spend:,.2f} SAB**"
-
-        else: # SELL
+        else:
             current_coins = self.p['portfolio'].get(self.coin, 0)
             if is_pct:
                 coins_to_sell = current_coins * (num/100)
@@ -87,30 +85,16 @@ class ChartView(ui.View):
         self.coin, self.price_data, self.history = coin, price_data, history
 
     def generate_chart_url(self):
-        # FIX: Sample the data (every 4th point) to prevent URL being too long
-        prices = [p[1] for p in self.history[::4]] 
-        
+        # Sample data to keep URL short
+        prices = [round(p[1], 8) for p in self.history[::6]] 
         config = {
             "type": "line",
-            "data": {
-                "labels": ["" for _ in prices],
-                "datasets": [{
-                    "data": prices,
-                    "borderColor": COINS[self.coin]["color"],
-                    "borderWidth": 4,
-                    "pointRadius": 0,
-                    "fill": True,
-                    "backgroundColor": "rgba(0,0,0,0.1)"
-                }]
-            },
-            "options": {
-                "scales": {"xAxes": [{"display": False}], "yAxes": [{"display": True, "gridLines": {"color": "rgba(255,255,255,0.05)"}}]},
-                "legend": {"display": False}
-            }
+            "data": {"labels": ["" for _ in prices], "datasets": [{"data": prices, "borderColor": COINS[self.coin]["color"], "borderWidth": 3, "pointRadius": 0, "fill": False}]},
+            "options": {"scales": {"xAxes": [{"display": False}], "yAxes": [{"display": True}]}, "legend": {"display": False}}
         }
-        # Final URL safety check
-        url = f"https://quickchart.io/chart?bkg=rgb(43,45,49)&width=500&height=250&c={json.dumps(config)}"
-        return url
+        # URL Encode the JSON string to prevent "Not well formed URL" error
+        params = urllib.parse.quote(json.dumps(config))
+        return f"https://quickchart.io/chart?bkg=rgb(43,45,49)&w=500&h=250&c={params}"
 
     @ui.button(label="BUY", style=discord.ButtonStyle.green)
     async def buy_btn(self, it, btn):
@@ -149,29 +133,29 @@ async def chart(it: discord.Interaction, coin: str):
     if coin_key not in COINS: return await it.response.send_message("❌ Invalid coin.", ephemeral=True)
     await it.response.defer()
 
-    ref = COINS[coin_key]['ref']
-    hist_r = requests.get(f"https://api.coingecko.com/api/v3/coins/{ref}/market_chart?vs_currency=eur&days=7")
-    
-    if hist_r.status_code != 200:
-        return await it.followup.send("❌ Market API busy. Try again shortly.")
-    
-    history = hist_r.json()['prices']
-    price_data = bot.market_prices.get(ref, {"eur": 0, "eur_24h_change": 0})
-    
-    view = ChartView(coin_key, price_data, history)
-    embed = discord.Embed(title=f"{COINS[coin_key]['emoji']} {COINS[coin_key]['name']} Market", color=0x2b2d31)
-    embed.add_field(name="Price", value=f"**€{price_data['eur']:,.8f}**", inline=True)
-    embed.add_field(name="24h Change", value=f"`{price_data['eur_24h_change']:+.2f}%`", inline=True)
-    
-    chart_url = view.generate_chart_url()
-    embed.set_image(url=chart_url)
-    
-    await it.followup.send(embed=embed, view=view)
+    try:
+        ref = COINS[coin_key]['ref']
+        hist_r = requests.get(f"https://api.coingecko.com/api/v3/coins/{ref}/market_chart?vs_currency=eur&days=7")
+        price_data = bot.market_prices.get(ref, {"eur": 0, "eur_24h_change": 0})
+        
+        embed = discord.Embed(title=f"{COINS[coin_key]['emoji']} {COINS[coin_key]['name']} Market", color=0x2b2d31)
+        embed.add_field(name="Price", value=f"**€{price_data['eur']:,.8f}**", inline=True)
+        embed.add_field(name="24h Change", value=f"`{price_data['eur_24h_change']:+.2f}%`", inline=True)
+        
+        if hist_r.status_code == 200:
+            view = ChartView(coin_key, price_data, hist_r.json()['prices'])
+            embed.set_image(url=view.generate_chart_url())
+            await it.followup.send(embed=embed, view=view)
+        else:
+            # Fallback if API is busy but we still have current price
+            await it.followup.send(content="⚠️ Chart unavailable (API Busy), but you can still trade:", embed=embed, view=ChartView(coin_key, price_data, []))
+    except Exception as e:
+        await it.followup.send(f"❌ Error loading chart: {str(e)}")
 
 @bot.tree.command(name="value", description="Eldorado Average Price Scraper")
 async def value(it: discord.Interaction, search: str):
     await it.response.defer()
-    query = search.replace(" ", "+").replace("/", "%2F")
+    query = urllib.parse.quote(search)
     url = f"https://www.eldorado.gg/steal-a-brainrot-brainrots/i/259?searchQuery={query}"
     scraper = cloudscraper.create_scraper(browser={'browser': 'chrome','mobile': False,'platform': 'windows'})
     r = scraper.get(url)
