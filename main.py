@@ -33,30 +33,33 @@ def get_profile(uid: str):
         return p
     return res.data[0]
 
+def format_price(val):
+    """Formats price to show full detail without trailing zeros if possible."""
+    return f"{val:,.8f}".rstrip('0').rstrip('.')
+
 async def coin_autocomplete(it: discord.Interaction, current: str):
     return [app_commands.Choice(name=k, value=k) for k in COINS if current.lower() in k.lower()][:25]
 
 # --- CHART TIMEFRAME VIEW ---
 class ChartView(ui.View):
-    def __init__(self, coin, bot_instance):
+    def __init__(self, coin, bot_instance, current_days=7):
         super().__init__(timeout=None)
         self.coin = coin
         self.bot = bot_instance
+        self.current_days = current_days
 
     async def update_chart(self, it: discord.Interaction, days: int, label: str):
-        # Determine if we need to defer (first call is already deferred by /chart)
         if not it.response.is_done():
             await it.response.defer()
-            
+        
+        self.current_days = days
         ref = COINS[self.coin]['ref']
         try:
             r = requests.get(f"https://api.coingecko.com/api/v3/coins/{ref}/market_chart?vs_currency=eur&days={days}")
             if r.status_code == 200:
                 history = r.json()['prices']
-                
-                # STRICT SAMPLING: Reduce to max 35 points to guarantee short URL
                 step = max(1, len(history) // 35) 
-                prices = [round(p[1], 6) for p in history[::step]]
+                prices = [p[1] for p in history[::step]]
                 
                 config = {
                     "type": "line",
@@ -69,10 +72,10 @@ class ChartView(ui.View):
                 
                 price_data = self.bot.market_prices.get(ref, {"eur": 0, "eur_24h_change": 0})
                 embed = discord.Embed(title=f"{COINS[self.coin]['emoji']} {COINS[self.coin]['name']} Market ({label})", color=0x2b2d31)
-                embed.add_field(name="Current Price", value=f"**€{price_data['eur']:,.8f}**", inline=True)
+                embed.add_field(name="Current Price", value=f"**€{format_price(price_data['eur'])}**", inline=True)
                 embed.add_field(name="24h Change", value=f"`{price_data['eur_24h_change']:+.2f}%`", inline=True)
                 embed.set_image(url=chart_url)
-                embed.set_footer(text="Use /buy or /sell to trade at live prices")
+                embed.set_footer(text="Full precision price | Use /buy or /sell to trade")
                 
                 await it.edit_original_response(embed=embed, view=self)
             else:
@@ -80,15 +83,19 @@ class ChartView(ui.View):
         except Exception as e:
             await it.followup.send(f"❌ Chart Error: {str(e)}", ephemeral=True)
 
-    @ui.button(label="24H", style=discord.ButtonStyle.secondary)
+    @ui.button(label="🔄 Refresh", style=discord.ButtonStyle.primary, row=0)
+    async def btn_refresh(self, it, btn):
+        await self.update_chart(it, self.current_days, f"{self.current_days}D" if self.current_days > 1 else "24H")
+
+    @ui.button(label="24H", style=discord.ButtonStyle.secondary, row=1)
     async def btn_24h(self, it, btn): await self.update_chart(it, 1, "24H")
-    @ui.button(label="7D", style=discord.ButtonStyle.secondary)
+    @ui.button(label="7D", style=discord.ButtonStyle.secondary, row=1)
     async def btn_7d(self, it, btn): await self.update_chart(it, 7, "7D")
-    @ui.button(label="1M", style=discord.ButtonStyle.secondary)
+    @ui.button(label="1M", style=discord.ButtonStyle.secondary, row=1)
     async def btn_1m(self, it, btn): await self.update_chart(it, 30, "1M")
-    @ui.button(label="3M", style=discord.ButtonStyle.secondary)
+    @ui.button(label="3M", style=discord.ButtonStyle.secondary, row=1)
     async def btn_3m(self, it, btn): await self.update_chart(it, 90, "3M")
-    @ui.button(label="1Y", style=discord.ButtonStyle.secondary)
+    @ui.button(label="1Y", style=discord.ButtonStyle.secondary, row=1)
     async def btn_1y(self, it, btn): await self.update_chart(it, 365, "1Y")
 
 class SAB_Bot(discord.Client):
@@ -141,7 +148,7 @@ async def buy(it: discord.Interaction, coin: str, amount: str):
     p['sab_balance'] -= sab_to_spend
     p['portfolio'][coin_key] = p['portfolio'].get(coin_key, 0) + coin_amt
     supabase.table("profiles").update(p).eq("user_id", str(it.user.id)).execute()
-    await it.response.send_message(f"✅ **Bought {coin_amt:,.4f} {coin_key}** for {sab_to_spend:,.2f} SAB")
+    await it.response.send_message(f"✅ **Bought {coin_amt:,.6f} {coin_key}** for {sab_to_spend:,.2f} SAB")
 
 @bot.tree.command(name="sell", description="Sell a coin (e.g. 10 or 50%)")
 @app_commands.autocomplete(coin=coin_autocomplete)
@@ -166,7 +173,7 @@ async def sell(it: discord.Interaction, coin: str, amount: str):
     p['sab_balance'] += sab_gain
     p['portfolio'][coin_key] -= coins_to_sell
     supabase.table("profiles").update(p).eq("user_id", str(it.user.id)).execute()
-    await it.response.send_message(f"✅ **Sold {coins_to_sell:,.4f} {coin_key}** for {sab_gain:,.2f} SAB")
+    await it.response.send_message(f"✅ **Sold {coins_to_sell:,.6f} {coin_key}** for {sab_gain:,.2f} SAB")
 
 @bot.tree.command(name="wallet", description="View your assets")
 async def wallet(it: discord.Interaction, user: discord.Member = None):
@@ -181,7 +188,7 @@ async def wallet(it: discord.Interaction, user: discord.Member = None):
             pr = bot.market_prices.get(COINS[c]['ref'], {}).get('eur', 0)
             val = amt * pr
             net += val
-            port.append(f"{COINS[c]['emoji']} **{c}**: {amt:,.4f} (≈ {val:,.2f} SAB)")
+            port.append(f"{COINS[c]['emoji']} **{c}**: {amt:,.6f} (≈ {val:,.2f} SAB)")
     
     embed.add_field(name="Holdings", value="\n".join(port) if port else "*None*", inline=False)
     embed.add_field(name="Net Worth", value=f"**{net:,.2f} SAB**", inline=False)
