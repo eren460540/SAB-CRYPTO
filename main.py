@@ -24,7 +24,6 @@ COINS = {
     "TANG": {"name": "Tang", "ref": "pepe", "color": "#3d9421", "emoji": "<:TANG:1494995850831728701>"}
 }
 
-# --- HELPERS ---
 def get_profile(uid: str):
     res = supabase.table("profiles").select("*").eq("user_id", uid).execute()
     if not res.data:
@@ -34,32 +33,28 @@ def get_profile(uid: str):
     return res.data[0]
 
 def format_price(val):
-    """Formats price to show full detail without trailing zeros if possible."""
+    """Shows full precision without scientific notation or excess zeros."""
     return f"{val:,.8f}".rstrip('0').rstrip('.')
 
 async def coin_autocomplete(it: discord.Interaction, current: str):
     return [app_commands.Choice(name=k, value=k) for k in COINS if current.lower() in k.lower()][:25]
 
-# --- CHART TIMEFRAME VIEW ---
 class ChartView(ui.View):
     def __init__(self, coin, bot_instance, current_days=7):
         super().__init__(timeout=None)
-        self.coin = coin
-        self.bot = bot_instance
-        self.current_days = current_days
+        self.coin, self.bot, self.current_days = coin, bot_instance, current_days
 
     async def update_chart(self, it: discord.Interaction, days: int, label: str):
-        if not it.response.is_done():
-            await it.response.defer()
-        
+        if not it.response.is_done(): await it.response.defer()
         self.current_days = days
         ref = COINS[self.coin]['ref']
         try:
             r = requests.get(f"https://api.coingecko.com/api/v3/coins/{ref}/market_chart?vs_currency=eur&days={days}")
             if r.status_code == 200:
                 history = r.json()['prices']
-                step = max(1, len(history) // 35) 
-                prices = [p[1] for p in history[::step]]
+                # Max 25 points to ensure we NEVER hit the 2048 character limit
+                step = max(1, len(history) // 25) 
+                prices = [round(p[1], 8) for p in history[::step]]
                 
                 config = {
                     "type": "line",
@@ -72,14 +67,13 @@ class ChartView(ui.View):
                 
                 price_data = self.bot.market_prices.get(ref, {"eur": 0, "eur_24h_change": 0})
                 embed = discord.Embed(title=f"{COINS[self.coin]['emoji']} {COINS[self.coin]['name']} Market ({label})", color=0x2b2d31)
-                embed.add_field(name="Current Price", value=f"**€{format_price(price_data['eur'])}**", inline=True)
+                # Display the high-precision price here
+                embed.add_field(name="Detailed Price", value=f"**€{format_price(price_data['eur'])}**", inline=True)
                 embed.add_field(name="24h Change", value=f"`{price_data['eur_24h_change']:+.2f}%`", inline=True)
                 embed.set_image(url=chart_url)
-                embed.set_footer(text="Full precision price | Use /buy or /sell to trade")
-                
                 await it.edit_original_response(embed=embed, view=self)
             else:
-                await it.followup.send("⚠️ API busy, try again in a moment.", ephemeral=True)
+                await it.followup.send("⚠️ API busy. Try refreshing in 5 seconds.", ephemeral=True)
         except Exception as e:
             await it.followup.send(f"❌ Chart Error: {str(e)}", ephemeral=True)
 
@@ -118,7 +112,7 @@ class SAB_Bot(discord.Client):
 
 bot = SAB_Bot()
 
-@bot.tree.command(name="chart", description="Professional market chart terminal")
+@bot.tree.command(name="chart")
 @app_commands.autocomplete(coin=coin_autocomplete)
 async def chart(it: discord.Interaction, coin: str):
     coin_key = coin.upper()
@@ -126,91 +120,79 @@ async def chart(it: discord.Interaction, coin: str):
     view = ChartView(coin_key, bot)
     await view.update_chart(it, 7, "7D")
 
-@bot.tree.command(name="buy", description="Buy a coin using SAB or % (e.g. 500 or 25%)")
+@bot.tree.command(name="buy")
 @app_commands.autocomplete(coin=coin_autocomplete)
 async def buy(it: discord.Interaction, coin: str, amount: str):
     coin_key = coin.upper()
-    if coin_key not in COINS: return await it.response.send_message("❌ Invalid coin.", ephemeral=True)
+    if coin_key not in COINS: return await it.response.send_message("❌ Invalid", ephemeral=True)
     price = bot.market_prices.get(COINS[coin_key]['ref'], {}).get('eur', 0)
-    if price == 0: return await it.response.send_message("❌ Market data syncing...", ephemeral=True)
-
+    if price == 0: return await it.response.send_message("❌ Syncing...", ephemeral=True)
     p = get_profile(str(it.user.id))
-    val = amount.strip()
-    is_pct = "%" in val
-    try: num = float(val.replace("%", ""))
-    except: return await it.response.send_message("❌ Use numbers or %", ephemeral=True)
+    try:
+        val = amount.strip()
+        num = float(val.replace("%", ""))
+        spend = (p['sab_balance'] * (num/100)) if "%" in val else num
+        if spend > p['sab_balance'] or spend <= 0: return await it.response.send_message("❌ Poor", ephemeral=True)
+        c_amt = spend / price
+        p['sab_balance'] -= spend
+        p['portfolio'][coin_key] += c_amt
+        supabase.table("profiles").update(p).eq("user_id", str(it.user.id)).execute()
+        await it.response.send_message(f"✅ Bought {c_amt:,.6f} {coin_key}")
+    except: await it.response.send_message("❌ Error", ephemeral=True)
 
-    sab_to_spend = (p['sab_balance'] * (num/100)) if is_pct else num
-    if sab_to_spend > p['sab_balance'] or sab_to_spend <= 0:
-        return await it.response.send_message("❌ Insufficient balance.", ephemeral=True)
-    
-    coin_amt = sab_to_spend / price
-    p['sab_balance'] -= sab_to_spend
-    p['portfolio'][coin_key] = p['portfolio'].get(coin_key, 0) + coin_amt
-    supabase.table("profiles").update(p).eq("user_id", str(it.user.id)).execute()
-    await it.response.send_message(f"✅ **Bought {coin_amt:,.6f} {coin_key}** for {sab_to_spend:,.2f} SAB")
-
-@bot.tree.command(name="sell", description="Sell a coin (e.g. 10 or 50%)")
+@bot.tree.command(name="sell")
 @app_commands.autocomplete(coin=coin_autocomplete)
 async def sell(it: discord.Interaction, coin: str, amount: str):
     coin_key = coin.upper()
-    if coin_key not in COINS: return await it.response.send_message("❌ Invalid coin.", ephemeral=True)
+    if coin_key not in COINS: return await it.response.send_message("❌ Invalid", ephemeral=True)
     price = bot.market_prices.get(COINS[coin_key]['ref'], {}).get('eur', 0)
-    if price == 0: return await it.response.send_message("❌ Market data syncing...", ephemeral=True)
-
     p = get_profile(str(it.user.id))
-    current_coins = p['portfolio'].get(coin_key, 0)
-    val = amount.strip()
-    is_pct = "%" in val
-    try: num = float(val.replace("%", ""))
-    except: return await it.response.send_message("❌ Use numbers or %", ephemeral=True)
+    try:
+        val, cur = amount.strip(), p['portfolio'].get(coin_key, 0)
+        num = float(val.replace("%", ""))
+        s_amt = (cur * (num/100)) if "%" in val else num
+        if s_amt > cur or s_amt <= 0: return await it.response.send_message("❌ Not enough", ephemeral=True)
+        gain = s_amt * price
+        p['sab_balance'] += gain
+        p['portfolio'][coin_key] -= s_amt
+        supabase.table("profiles").update(p).eq("user_id", str(it.user.id)).execute()
+        await it.response.send_message(f"✅ Sold for {gain:,.2f} SAB")
+    except: await it.response.send_message("❌ Error", ephemeral=True)
 
-    coins_to_sell = (current_coins * (num/100)) if is_pct else num
-    if coins_to_sell > current_coins or coins_to_sell <= 0:
-        return await it.response.send_message("❌ Not enough coins.", ephemeral=True)
-    
-    sab_gain = coins_to_sell * price
-    p['sab_balance'] += sab_gain
-    p['portfolio'][coin_key] -= coins_to_sell
-    supabase.table("profiles").update(p).eq("user_id", str(it.user.id)).execute()
-    await it.response.send_message(f"✅ **Sold {coins_to_sell:,.6f} {coin_key}** for {sab_gain:,.2f} SAB")
-
-@bot.tree.command(name="wallet", description="View your assets")
+@bot.tree.command(name="wallet")
 async def wallet(it: discord.Interaction, user: discord.Member = None):
-    target = user or it.user
-    p = get_profile(str(target.id))
-    embed = discord.Embed(title=f"🏦 Vault: {target.display_name}", color=0xFFD700)
-    embed.add_field(name="Balance", value=f"**{p['sab_balance']:,.2f}** {SAB_EMOJI}", inline=False)
-    
+    t = user or it.user
+    p = get_profile(str(t.id))
+    emb = discord.Embed(title=f"🏦 Vault: {t.display_name}", color=0xFFD700)
+    emb.add_field(name="Balance", value=f"**{p['sab_balance']:,.2f}** {SAB_EMOJI}", inline=False)
     port, net = [], p['sab_balance']
-    for c, amt in p['portfolio'].items():
-        if amt > 0:
+    for c, a in p['portfolio'].items():
+        if a > 0:
             pr = bot.market_prices.get(COINS[c]['ref'], {}).get('eur', 0)
-            val = amt * pr
+            val = a * pr
             net += val
-            port.append(f"{COINS[c]['emoji']} **{c}**: {amt:,.6f} (≈ {val:,.2f} SAB)")
-    
-    embed.add_field(name="Holdings", value="\n".join(port) if port else "*None*", inline=False)
-    embed.add_field(name="Net Worth", value=f"**{net:,.2f} SAB**", inline=False)
-    await it.response.send_message(embed=embed)
+            port.append(f"{COINS[c]['emoji']} **{c}**: {a:,.6f} (≈ {val:,.2f} SAB)")
+    emb.add_field(name="Holdings", value="\n".join(port) if port else "Empty", inline=False)
+    emb.add_field(name="Net Worth", value=f"**{net:,.2f} SAB**", inline=False)
+    await it.response.send_message(embed=emb)
 
-@bot.tree.command(name="add_sab", description="Admin Only")
+@bot.tree.command(name="add_sab")
 @app_commands.checks.has_role(ADMIN_ROLE_ID)
-async def add_sab(it: discord.Interaction, user: discord.Member, amount: float):
+async def add_sab(it, user: discord.Member, amount: float):
     p = get_profile(str(user.id))
     p['sab_balance'] += amount
-    supabase.table("profiles").update({"sab_balance": p['sab_balance']}).eq("user_id", str(user.id)).execute()
-    await it.response.send_message(f"✅ Added {amount} SAB to {user.name}")
+    supabase.table("profiles").update(p).eq("user_id", str(user.id)).execute()
+    await it.response.send_message(f"✅ Added {amount}")
 
-@bot.tree.command(name="deposit", description="Open deposit ticket")
-async def deposit(it: discord.Interaction):
+@bot.tree.command(name="deposit")
+async def deposit(it):
     g, cat, adm = it.guild, it.guild.get_channel(TICKET_CATEGORY_ID), it.guild.get_role(ADMIN_ROLE_ID)
     ov = {g.default_role: discord.PermissionOverwrite(view_channel=False), it.user: discord.PermissionOverwrite(view_channel=True), adm: discord.PermissionOverwrite(view_channel=True)}
     ch = await g.create_text_channel(f"dep-{it.user.name}", category=cat, overwrites=ov)
     await it.response.send_message(f"✅ {ch.mention}", ephemeral=True)
 
-@bot.tree.command(name="withdraw", description="Open withdrawal ticket")
-async def withdraw(it: discord.Interaction):
+@bot.tree.command(name="withdraw")
+async def withdraw(it):
     g, cat, adm = it.guild, it.guild.get_channel(TICKET_CATEGORY_ID), it.guild.get_role(ADMIN_ROLE_ID)
     ov = {g.default_role: discord.PermissionOverwrite(view_channel=False), it.user: discord.PermissionOverwrite(view_channel=True), adm: discord.PermissionOverwrite(view_channel=True)}
     ch = await g.create_text_channel(f"wit-{it.user.name}", category=cat, overwrites=ov)
