@@ -11,17 +11,18 @@ ADMIN_ROLE_ID = int(os.getenv("ADMIN_ROLE_ID", 0))
 TICKET_CATEGORY_ID = int(os.getenv("TICKET_CATEGORY_ID", 0))
 SAB_EMOJI = "<:SAB:1495012520510099577>"
 
+# Updated References for CryptoCompare Symbols
 COINS = {
-    "ELEPHANT": {"name": "Elephant", "ref": "bitcoin", "color": "#f7931a", "emoji": "<:ELEPHANT:1494995440213688340>"},
-    "MEOWL": {"name": "Meowl", "ref": "ethereum", "color": "#627eea", "emoji": "<:MEOWL:1494995595222454366>"},
-    "GARAMA": {"name": "Garama", "ref": "binancecoin", "color": "#f3ba2f", "emoji": "<:GARAMA:1494995007910842418>"},
-    "SKIBIDI": {"name": "Skibidi", "ref": "solana", "color": "#14f195", "emoji": "<:SKIBIDI:1494995556030746714>"},
-    "DRAG": {"name": "Dragon", "ref": "ripple", "color": "#23292f", "emoji": "<:DRAG:1494995236068397127>"},
-    "KETCHURU": {"name": "Ketchuru", "ref": "tron", "color": "#ff0013", "emoji": "<:KETCHURU:1494996298733191308>"},
-    "TICTAC": {"name": "Tictac", "ref": "cardano", "color": "#0033ad", "emoji": "<:TICTAC:1494996594473308190>"},
-    "SUPREME": {"name": "La Supreme", "ref": "dogecoin", "color": "#c2a633", "emoji": "<:SUPREME:1494997175531470960>"},
-    "KETUPAT": {"name": "Ketupat", "ref": "shiba-inu", "color": "#ff0000", "emoji": "<:KETUPAT:1494996070303006793>"},
-    "TANG": {"name": "Tang", "ref": "pepe", "color": "#3d9421", "emoji": "<:TANG:1494995850831728701>"}
+    "ELEPHANT": {"symbol": "BTC", "color": "#f7931a", "emoji": "<:ELEPHANT:1494995440213688340>", "name": "Elephant"},
+    "MEOWL": {"symbol": "ETH", "color": "#627eea", "emoji": "<:MEOWL:1494995595222454366>", "name": "Meowl"},
+    "GARAMA": {"symbol": "BNB", "color": "#f3ba2f", "emoji": "<:GARAMA:1494995007910842418>", "name": "Garama"},
+    "SKIBIDI": {"symbol": "SOL", "color": "#14f195", "emoji": "<:SKIBIDI:1494995556030746714>", "name": "Skibidi"},
+    "DRAG": {"symbol": "XRP", "color": "#23292f", "emoji": "<:DRAG:1494995236068397127>", "name": "Dragon"},
+    "KETCHURU": {"symbol": "TRX", "color": "#ff0013", "emoji": "<:KETCHURU:1494996298733191308>", "name": "Ketchuru"},
+    "TICTAC": {"symbol": "ADA", "color": "#0033ad", "emoji": "<:TICTAC:1494996594473308190>", "name": "Tictac"},
+    "SUPREME": {"symbol": "DOGE", "color": "#c2a633", "emoji": "<:SUPREME:1494997175531470960>", "name": "La Supreme"},
+    "KETUPAT": {"symbol": "SHIB", "color": "#ff0000", "emoji": "<:KETUPAT:1494996070303006793>", "name": "Ketupat"},
+    "TANG": {"symbol": "PEPE", "color": "#3d9421", "emoji": "<:TANG:1494995850831728701>", "name": "Tang"}
 }
 
 def get_profile(uid: str):
@@ -33,7 +34,6 @@ def get_profile(uid: str):
     return res.data[0]
 
 def format_price(val):
-    """Shows full precision without scientific notation or excess zeros."""
     return f"{val:,.8f}".rstrip('0').rstrip('.')
 
 async def coin_autocomplete(it: discord.Interaction, current: str):
@@ -47,33 +47,47 @@ class ChartView(ui.View):
     async def update_chart(self, it: discord.Interaction, days: int, label: str):
         if not it.response.is_done(): await it.response.defer()
         self.current_days = days
-        ref = COINS[self.coin]['ref']
+        symbol = COINS[self.coin]['symbol']
+        
+        # Determine API endpoint based on timeframe
+        if days <= 1:
+            url = f"https://min-api.cryptocompare.com/data/v2/histohour?fsym={symbol}&tsym=EUR&limit=24"
+        elif days <= 30:
+            url = f"https://min-api.cryptocompare.com/data/v2/histoday?fsym={symbol}&tsym=EUR&limit={days}"
+        else:
+            url = f"https://min-api.cryptocompare.com/data/v2/histoday?fsym={symbol}&tsym=EUR&limit={days}"
+
         try:
-            r = requests.get(f"https://api.coingecko.com/api/v3/coins/{ref}/market_chart?vs_currency=eur&days={days}")
-            if r.status_code == 200:
-                history = r.json()['prices']
-                # Max 25 points to ensure we NEVER hit the 2048 character limit
-                step = max(1, len(history) // 25) 
-                prices = [round(p[1], 8) for p in history[::step]]
+            r = requests.get(url).json()
+            if r.get('Response') == "Success":
+                data_points = r['Data']['Data']
+                prices = [round(d['close'], 8) for d in data_points]
                 
+                # Sample to 25 points to ensure URL stays short
+                step = max(1, len(prices) // 25)
+                sampled_prices = prices[::step]
+
                 config = {
                     "type": "line",
-                    "data": {"labels": ["" for _ in prices], "datasets": [{"data": prices, "borderColor": COINS[self.coin]["color"], "borderWidth": 4, "pointRadius": 0, "fill": False}]},
+                    "data": {"labels": ["" for _ in sampled_prices], "datasets": [{"data": sampled_prices, "borderColor": COINS[self.coin]["color"], "borderWidth": 4, "pointRadius": 0, "fill": False}]},
                     "options": {"scales": {"xAxes": [{"display": False}], "yAxes": [{"display": False}]}, "legend": {"display": False}}
                 }
                 
                 params = urllib.parse.quote(json.dumps(config))
                 chart_url = f"https://quickchart.io/chart?bkg=rgb(43,45,49)&w=500&h=200&c={params}"
                 
-                price_data = self.bot.market_prices.get(ref, {"eur": 0, "eur_24h_change": 0})
+                # Fetch Current Price Detail
+                curr_url = f"https://min-api.cryptocompare.com/data/pricemultifull?fsyms={symbol}&tsyms=EUR"
+                curr_r = requests.get(curr_url).json()
+                raw_data = curr_r['RAW'][symbol]['EUR']
+                
                 embed = discord.Embed(title=f"{COINS[self.coin]['emoji']} {COINS[self.coin]['name']} Market ({label})", color=0x2b2d31)
-                # Display the high-precision price here
-                embed.add_field(name="Detailed Price", value=f"**€{format_price(price_data['eur'])}**", inline=True)
-                embed.add_field(name="24h Change", value=f"`{price_data['eur_24h_change']:+.2f}%`", inline=True)
+                embed.add_field(name="Detailed Price", value=f"**€{format_price(raw_data['PRICE'])}**", inline=True)
+                embed.add_field(name="24h Change", value=f"`{raw_data['CHANGEPCT24HOUR']:+.2f}%`", inline=True)
                 embed.set_image(url=chart_url)
                 await it.edit_original_response(embed=embed, view=self)
             else:
-                await it.followup.send("⚠️ API busy. Try refreshing in 5 seconds.", ephemeral=True)
+                await it.followup.send("⚠️ CryptoCompare limit reached. Wait 1 min.", ephemeral=True)
         except Exception as e:
             await it.followup.send(f"❌ Chart Error: {str(e)}", ephemeral=True)
 
@@ -105,9 +119,20 @@ class SAB_Bot(discord.Client):
     @tasks.loop(seconds=15)
     async def update_prices(self):
         try:
-            ids = ",".join([c["ref"] for c in COINS.values()])
-            r = requests.get(f"https://api.coingecko.com/api/v3/simple/price?ids={ids}&vs_currencies=eur&include_24hr_change=true")
-            if r.status_code == 200: self.market_prices = r.json()
+            fsyms = ",".join([c["symbol"] for c in COINS.values()])
+            r = requests.get(f"https://min-api.cryptocompare.com/data/pricemultifull?fsyms={fsyms}&tsyms=EUR")
+            if r.status_code == 200:
+                data = r.json().get('RAW', {})
+                # Standardize format for the rest of the bot
+                new_prices = {}
+                for coin_name, info in COINS.items():
+                    symbol = info['symbol']
+                    if symbol in data:
+                        new_prices[symbol] = {
+                            "eur": data[symbol]['EUR']['PRICE'],
+                            "eur_24h_change": data[symbol]['EUR']['CHANGEPCT24HOUR']
+                        }
+                self.market_prices = new_prices
         except: pass
 
 bot = SAB_Bot()
@@ -116,7 +141,7 @@ bot = SAB_Bot()
 @app_commands.autocomplete(coin=coin_autocomplete)
 async def chart(it: discord.Interaction, coin: str):
     coin_key = coin.upper()
-    if coin_key not in COINS: return await it.response.send_message("❌ Invalid coin.", ephemeral=True)
+    if coin_key not in COINS: return await it.response.send_message("❌ Invalid", ephemeral=True)
     view = ChartView(coin_key, bot)
     await view.update_chart(it, 7, "7D")
 
@@ -125,7 +150,7 @@ async def chart(it: discord.Interaction, coin: str):
 async def buy(it: discord.Interaction, coin: str, amount: str):
     coin_key = coin.upper()
     if coin_key not in COINS: return await it.response.send_message("❌ Invalid", ephemeral=True)
-    price = bot.market_prices.get(COINS[coin_key]['ref'], {}).get('eur', 0)
+    price = bot.market_prices.get(COINS[coin_key]['symbol'], {}).get('eur', 0)
     if price == 0: return await it.response.send_message("❌ Syncing...", ephemeral=True)
     p = get_profile(str(it.user.id))
     try:
@@ -135,7 +160,7 @@ async def buy(it: discord.Interaction, coin: str, amount: str):
         if spend > p['sab_balance'] or spend <= 0: return await it.response.send_message("❌ Poor", ephemeral=True)
         c_amt = spend / price
         p['sab_balance'] -= spend
-        p['portfolio'][coin_key] += c_amt
+        p['portfolio'][coin_key] = p['portfolio'].get(coin_key, 0) + c_amt
         supabase.table("profiles").update(p).eq("user_id", str(it.user.id)).execute()
         await it.response.send_message(f"✅ Bought {c_amt:,.6f} {coin_key}")
     except: await it.response.send_message("❌ Error", ephemeral=True)
@@ -145,7 +170,7 @@ async def buy(it: discord.Interaction, coin: str, amount: str):
 async def sell(it: discord.Interaction, coin: str, amount: str):
     coin_key = coin.upper()
     if coin_key not in COINS: return await it.response.send_message("❌ Invalid", ephemeral=True)
-    price = bot.market_prices.get(COINS[coin_key]['ref'], {}).get('eur', 0)
+    price = bot.market_prices.get(COINS[coin_key]['symbol'], {}).get('eur', 0)
     p = get_profile(str(it.user.id))
     try:
         val, cur = amount.strip(), p['portfolio'].get(coin_key, 0)
@@ -168,7 +193,7 @@ async def wallet(it: discord.Interaction, user: discord.Member = None):
     port, net = [], p['sab_balance']
     for c, a in p['portfolio'].items():
         if a > 0:
-            pr = bot.market_prices.get(COINS[c]['ref'], {}).get('eur', 0)
+            pr = bot.market_prices.get(COINS[c]['symbol'], {}).get('eur', 0)
             val = a * pr
             net += val
             port.append(f"{COINS[c]['emoji']} **{c}**: {a:,.6f} (≈ {val:,.2f} SAB)")
