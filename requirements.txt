@@ -1,5 +1,6 @@
 discord.py
 supabase==2.3.7
+httpx==0.24.1
 python-dotenv
 requests
 cloudscraper
