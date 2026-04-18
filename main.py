@@ -1,4 +1,4 @@
-import os, discord, requests, cloudscraper, json, asyncio
+import os, discord, requests, cloudscraper, json
 from discord import app_commands, ui
 from discord.ext import tasks
 from bs4 import BeautifulSoup
@@ -18,7 +18,7 @@ COINS = {
     "DRAG": {"name": "Dragon", "ref": "ripple", "color": "rgb(35, 41, 47)", "emoji": "<:DRAG:1494995236068397127>"},
     "KETCHURU": {"name": "Ketchuru", "ref": "tron", "color": "rgb(255, 0, 19)", "emoji": "<:KETCHURU:1494996298733191308>"},
     "TICTAC": {"name": "Tictac", "ref": "cardano", "color": "rgb(0, 51, 173)", "emoji": "<:TICTAC:1494996594473308190>"},
-    "SUPREME": {"name": "Supreme", "ref": "dogecoin", "color": "rgb(194, 166, 51)", "emoji": "<:SUPREME:1494997175531470960>"},
+    "SUPREME": {"name": "La Supreme", "ref": "dogecoin", "color": "rgb(194, 166, 51)", "emoji": "<:SUPREME:1494997175531470960>"},
     "KETUPAT": {"name": "Ketupat", "ref": "shiba-inu", "color": "rgb(255, 0, 0)", "emoji": "<:KETUPAT:1494996070303006793>"},
     "TANG": {"name": "Tang", "ref": "pepe", "color": "rgb(61, 148, 33)", "emoji": "<:TANG:1494995850831728701>"}
 }
@@ -32,8 +32,8 @@ def get_profile(uid: str):
         return p
     return res.data[0]
 
-# Emojis removed from Choice name for a cleaner pick-list
 async def coin_autocomplete(it: discord.Interaction, current: str):
+    # EMOJIS REMOVED FROM PICKER
     return [app_commands.Choice(name=k, value=k) for k in COINS if current.lower() in k.lower()][:25]
 
 # --- TRADING MODAL ---
@@ -59,7 +59,7 @@ class TradeModal(ui.Modal):
             coin_amt = sab_to_spend / self.price
             self.p['sab_balance'] -= sab_to_spend
             self.p['portfolio'][self.coin] = self.p['portfolio'].get(self.coin, 0) + coin_amt
-            msg = f"✅ Spent **{sab_to_spend:,.2f} SAB** for **{coin_amt:,.6f} {self.coin}**"
+            msg = f"✅ Bought **{coin_amt:,.6f} {self.coin}** for **{sab_to_spend:,.2f} SAB**"
 
         else: # SELL
             current_coins = self.p['portfolio'].get(self.coin, 0)
@@ -87,7 +87,9 @@ class ChartView(ui.View):
         self.coin, self.price_data, self.history = coin, price_data, history
 
     def generate_chart_url(self):
-        prices = [p[1] for p in self.history]
+        # FIX: Sample the data (every 4th point) to prevent URL being too long
+        prices = [p[1] for p in self.history[::4]] 
+        
         config = {
             "type": "line",
             "data": {
@@ -106,7 +108,9 @@ class ChartView(ui.View):
                 "legend": {"display": False}
             }
         }
-        return f"https://quickchart.io/chart?bkg=rgb(43,45,49)&width=600&height=300&c={json.dumps(config)}"
+        # Final URL safety check
+        url = f"https://quickchart.io/chart?bkg=rgb(43,45,49)&width=500&height=250&c={json.dumps(config)}"
+        return url
 
     @ui.button(label="BUY", style=discord.ButtonStyle.green)
     async def buy_btn(self, it, btn):
@@ -141,23 +145,27 @@ bot = SAB_Bot()
 @bot.tree.command(name="chart", description="Professional market chart and trade terminal")
 @app_commands.autocomplete(coin=coin_autocomplete)
 async def chart(it: discord.Interaction, coin: str):
-    coin = coin.upper()
-    if coin not in COINS: return await it.response.send_message("❌ Invalid coin.", ephemeral=True)
+    coin_key = coin.upper()
+    if coin_key not in COINS: return await it.response.send_message("❌ Invalid coin.", ephemeral=True)
     await it.response.defer()
 
-    ref = COINS[coin]['ref']
+    ref = COINS[coin_key]['ref']
     hist_r = requests.get(f"https://api.coingecko.com/api/v3/coins/{ref}/market_chart?vs_currency=eur&days=7")
+    
     if hist_r.status_code != 200:
-        return await it.followup.send("❌ API Busy. Try later.")
+        return await it.followup.send("❌ Market API busy. Try again shortly.")
     
     history = hist_r.json()['prices']
     price_data = bot.market_prices.get(ref, {"eur": 0, "eur_24h_change": 0})
     
-    view = ChartView(coin, price_data, history)
-    embed = discord.Embed(title=f"{COINS[coin]['emoji']} {COINS[coin]['name']} Market", color=0x2b2d31)
+    view = ChartView(coin_key, price_data, history)
+    embed = discord.Embed(title=f"{COINS[coin_key]['emoji']} {COINS[coin_key]['name']} Market", color=0x2b2d31)
     embed.add_field(name="Price", value=f"**€{price_data['eur']:,.8f}**", inline=True)
     embed.add_field(name="24h Change", value=f"`{price_data['eur_24h_change']:+.2f}%`", inline=True)
-    embed.set_image(url=view.generate_chart_url())
+    
+    chart_url = view.generate_chart_url()
+    embed.set_image(url=chart_url)
+    
     await it.followup.send(embed=embed, view=view)
 
 @bot.tree.command(name="value", description="Eldorado Average Price Scraper")
