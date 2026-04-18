@@ -10,21 +10,20 @@ supabase: Client = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_
 TOKEN = os.getenv("BOT_TOKEN")
 SAB_EMOJI = "<:SAB:1495012520510099577>"
 
-# Coin Config with official API IDs
 COINS = {
-    "ELEPHANT": {"name": "Elephant", "ref": "bitcoin", "color": "rgb(247, 147, 26)"},
-    "MEOWL": {"name": "Meowl", "ref": "ethereum", "color": "rgb(98, 126, 234)"},
-    "GARAMA": {"name": "Garama", "ref": "binancecoin", "color": "rgb(243, 186, 47)"},
-    "SKIBIDI": {"name": "Skibidi", "ref": "solana", "color": "rgb(20, 241, 149)"},
-    "DRAG": {"name": "Dragon", "ref": "ripple", "color": "rgb(35, 41, 47)"},
-    "KETCHURU": {"name": "Ketchuru", "ref": "tron", "color": "rgb(255, 0, 19)"},
-    "TICTAC": {"name": "Tictac", "ref": "cardano", "color": "rgb(0, 51, 173)"},
-    "SUPREME": {"name": "Supreme", "ref": "dogecoin", "color": "rgb(194, 166, 51)"},
-    "KETUPAT": {"name": "Ketupat", "ref": "shiba-inu", "color": "rgb(255, 0, 0)"},
-    "TANG": {"name": "Tang", "ref": "pepe", "color": "rgb(61, 148, 33)"}
+    "ELEPHANT": {"name": "Elephant", "ref": "bitcoin", "color": "rgb(247, 147, 26)", "emoji": "<:ELEPHANT:1494995440213688340>"},
+    "MEOWL": {"name": "Meowl", "ref": "ethereum", "color": "rgb(98, 126, 234)", "emoji": "<:MEOWL:1494995595222454366>"},
+    "GARAMA": {"name": "Garama", "ref": "binancecoin", "color": "rgb(243, 186, 47)", "emoji": "<:GARAMA:1494995007910842418>"},
+    "SKIBIDI": {"name": "Skibidi", "ref": "solana", "color": "rgb(20, 241, 149)", "emoji": "<:SKIBIDI:1494995556030746714>"},
+    "DRAG": {"name": "Dragon", "ref": "ripple", "color": "rgb(35, 41, 47)", "emoji": "<:DRAG:1494995236068397127>"},
+    "KETCHURU": {"name": "Ketchuru", "ref": "tron", "color": "rgb(255, 0, 19)", "emoji": "<:KETCHURU:1494996298733191308>"},
+    "TICTAC": {"name": "Tictac", "ref": "cardano", "color": "rgb(0, 51, 173)", "emoji": "<:TICTAC:1494996594473308190>"},
+    "SUPREME": {"name": "Supreme", "ref": "dogecoin", "color": "rgb(194, 166, 51)", "emoji": "<:SUPREME:1494997175531470960>"},
+    "KETUPAT": {"name": "Ketupat", "ref": "shiba-inu", "color": "rgb(255, 0, 0)", "emoji": "<:KETUPAT:1494996070303006793>"},
+    "TANG": {"name": "Tang", "ref": "pepe", "color": "rgb(61, 148, 33)", "emoji": "<:TANG:1494995850831728701>"}
 }
 
-# --- DATABASE HELPERS ---
+# --- HELPERS ---
 def get_profile(uid: str):
     res = supabase.table("profiles").select("*").eq("user_id", uid).execute()
     if not res.data:
@@ -32,6 +31,10 @@ def get_profile(uid: str):
         supabase.table("profiles").insert(p).execute()
         return p
     return res.data[0]
+
+# Emojis removed from Choice name for a cleaner pick-list
+async def coin_autocomplete(it: discord.Interaction, current: str):
+    return [app_commands.Choice(name=k, value=k) for k in COINS if current.lower() in k.lower()][:25]
 
 # --- TRADING MODAL ---
 class TradeModal(ui.Modal):
@@ -46,21 +49,20 @@ class TradeModal(ui.Modal):
         is_pct = "%" in val
         try:
             num = float(val.replace("%", ""))
-        except: return await it.response.send_message("❌ Invalid number.", ephemeral=True)
+        except: return await it.response.send_message("❌ Invalid input.", ephemeral=True)
 
         if self.mode == "BUY":
             sab_to_spend = (self.p['sab_balance'] * (num/100)) if is_pct else num
             if sab_to_spend > self.p['sab_balance'] or sab_to_spend <= 0:
-                return await it.response.send_message("❌ Insufficient SAB balance.", ephemeral=True)
+                return await it.response.send_message("❌ Insufficient SAB.", ephemeral=True)
             
             coin_amt = sab_to_spend / self.price
             self.p['sab_balance'] -= sab_to_spend
             self.p['portfolio'][self.coin] = self.p['portfolio'].get(self.coin, 0) + coin_amt
-            msg = f"✅ Spent **{sab_to_spend:,.2f} SAB** to buy **{coin_amt:,.6f} {self.coin}**"
+            msg = f"✅ Spent **{sab_to_spend:,.2f} SAB** for **{coin_amt:,.6f} {self.coin}**"
 
         else: # SELL
             current_coins = self.p['portfolio'].get(self.coin, 0)
-            # Sell % of coins or sell specific SAB worth of coins
             if is_pct:
                 coins_to_sell = current_coins * (num/100)
                 sab_gain = coins_to_sell * self.price
@@ -69,30 +71,27 @@ class TradeModal(ui.Modal):
                 coins_to_sell = num / self.price
             
             if coins_to_sell > current_coins or coins_to_sell <= 0:
-                return await it.response.send_message("❌ You don't have enough coins.", ephemeral=True)
+                return await it.response.send_message("❌ Not enough coins.", ephemeral=True)
             
             self.p['sab_balance'] += sab_gain
             self.p['portfolio'][self.coin] -= coins_to_sell
-            msg = f"✅ Sold **{coins_to_sell:,.4f} {self.coin}** for **{sab_gain:,.2f} SAB**"
+            msg = f"✅ Sold for **{sab_gain:,.2f} SAB**"
 
         supabase.table("profiles").update(self.p).eq("user_id", str(it.user.id)).execute()
         await it.response.send_message(msg, ephemeral=True)
 
-# --- REAL-TIME CHART VIEW ---
+# --- CHART VIEW ---
 class ChartView(ui.View):
     def __init__(self, coin, price_data, history):
         super().__init__(timeout=None)
         self.coin, self.price_data, self.history = coin, price_data, history
 
     def generate_chart_url(self):
-        # Format history data for QuickChart
         prices = [p[1] for p in self.history]
-        labels = ["" for _ in prices] # Hide labels for cleaner look
-        
         config = {
             "type": "line",
             "data": {
-                "labels": labels,
+                "labels": ["" for _ in prices],
                 "datasets": [{
                     "data": prices,
                     "borderColor": COINS[self.coin]["color"],
@@ -140,55 +139,38 @@ class SAB_Bot(discord.Client):
 bot = SAB_Bot()
 
 @bot.tree.command(name="chart", description="Professional market chart and trade terminal")
-@app_commands.autocomplete(coin=lambda it, cur: [app_commands.Choice(name=k, value=k) for k in COINS if cur.lower() in k.lower()])
+@app_commands.autocomplete(coin=coin_autocomplete)
 async def chart(it: discord.Interaction, coin: str):
     coin = coin.upper()
-    if coin not in COINS: return await it.response.send_message("❌ Unknown coin.", ephemeral=True)
+    if coin not in COINS: return await it.response.send_message("❌ Invalid coin.", ephemeral=True)
     await it.response.defer()
 
-    # Fetch real 7-day history for the "Up/Down" detailed look
     ref = COINS[coin]['ref']
     hist_r = requests.get(f"https://api.coingecko.com/api/v3/coins/{ref}/market_chart?vs_currency=eur&days=7")
-    
     if hist_r.status_code != 200:
-        return await it.followup.send("❌ Market API busy. Try again in 10s.")
+        return await it.followup.send("❌ API Busy. Try later.")
     
     history = hist_r.json()['prices']
     price_data = bot.market_prices.get(ref, {"eur": 0, "eur_24h_change": 0})
     
     view = ChartView(coin, price_data, history)
-    embed = discord.Embed(title=f"📈 {COINS[coin]['name']} / EUR", color=0x2b2d31)
-    embed.add_field(name="Live Price", value=f"**€{price_data['eur']:,.8f}**", inline=True)
+    embed = discord.Embed(title=f"{COINS[coin]['emoji']} {COINS[coin]['name']} Market", color=0x2b2d31)
+    embed.add_field(name="Price", value=f"**€{price_data['eur']:,.8f}**", inline=True)
     embed.add_field(name="24h Change", value=f"`{price_data['eur_24h_change']:+.2f}%`", inline=True)
     embed.set_image(url=view.generate_chart_url())
-    
     await it.followup.send(embed=embed, view=view)
 
-@bot.tree.command(name="value", description="Average Eldorado.gg price scraper")
+@bot.tree.command(name="value", description="Eldorado Average Price Scraper")
 async def value(it: discord.Interaction, search: str):
     await it.response.defer()
-    # Improved scraper logic for items like '50m/s'
     query = search.replace(" ", "+").replace("/", "%2F")
     url = f"https://www.eldorado.gg/steal-a-brainrot-brainrots/i/259?searchQuery={query}"
-    
     scraper = cloudscraper.create_scraper(browser={'browser': 'chrome','mobile': False,'platform': 'windows'})
     r = scraper.get(url)
     soup = BeautifulSoup(r.text, 'html.parser')
-    
-    # Target listing prices
-    price_tags = soup.select('.price-amount')
-    if not price_tags:
-        return await it.followup.send(f"❌ Nothing found on Eldorado for `{search}`.")
-        
-    prices = []
-    for p in price_tags[:25]:
-        try: prices.append(float(p.text.replace('$','').replace(',','').strip()))
-        except: continue
-        
-    avg = sum(prices) / len(prices)
-    embed = discord.Embed(title=f"🔎 Market Value: {search}", color=0x5865F2)
-    embed.add_field(name="Average Price (Top 25)", value=f"**${avg:,.2f}**", inline=False)
-    embed.set_footer(text="Live scraping from Eldorado.gg")
-    await it.followup.send(embed=embed)
+    prices = [float(x.text.replace('$','').replace(',','')) for x in soup.select('.price-amount')[:25]]
+    if not prices: return await it.followup.send(f"❌ Nothing found for `{search}`.")
+    avg = sum(prices)/len(prices)
+    await it.followup.send(embed=discord.Embed(title=f"🔎 Search: {search}", description=f"**Average Price: ${avg:,.2f}**", color=0x5865F2))
 
 bot.run(TOKEN)
