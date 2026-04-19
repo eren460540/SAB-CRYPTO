@@ -362,7 +362,7 @@ async def add_sab(it, user: discord.Member, amount: float):
     supabase.table("profiles").update(p).eq("user_id", str(user.id)).execute()
     await it.response.send_message(f"✅ Added {amount} SAB to {user.display_name}")
 
-@bot.tree.command(name="sab_remove", description="Admin: Remove SAB from a user")
+@bot.tree.command(name="remove_sab", description="Admin: Fully reset a user's SAB balance and holdings to zero")
 @app_commands.checks.has_role(ADMIN_ROLE_ID)
 async def sab_remove(it, user: discord.Member, amount: float):
     p = get_profile(str(user.id))
