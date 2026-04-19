@@ -383,13 +383,15 @@ async def add_sab(it, user: discord.Member, amount: float):
     supabase.table("profiles").update(p).eq("user_id", str(user.id)).execute()
     await it.response.send_message(f"✅ Added {amount} SAB to {user.display_name}")
 
-@bot.tree.command(name="remove_sab", description="Admin: Fully reset a user's SAB balance and holdings to zero")
+@bot.tree.command(name="remove_sab", description="Admin: Fully reset a user's SAB balance, holdings, and profit to zero")
 @app_commands.checks.has_role(ADMIN_ROLE_ID)
-async def sab_remove(it, user: discord.Member, amount: float):
+async def sab_remove(it, user: discord.Member):
     p = get_profile(str(user.id))
-    p['sab_balance'] = max(0.0, p['sab_balance'] - amount)
+    p['sab_balance'] = 0.0
+    p['portfolio'] = {k: 0.0 for k in COINS}
+    p['portfolio_cost_basis'] = {k: 0.0 for k in COINS}
     supabase.table("profiles").update(p).eq("user_id", str(user.id)).execute()
-    await it.response.send_message(f"✅ Removed {amount} SAB from {user.display_name}")
+    await it.response.send_message(f"⚠️ Fully reset {user.display_name}'s SAB balance, holdings, and profit to zero")
 
 @bot.tree.command(name="reset", description="Admin: Fully wipe all economy data (balance, holdings, profit)")
 @app_commands.checks.has_role(ADMIN_ROLE_ID)
