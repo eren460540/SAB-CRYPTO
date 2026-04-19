@@ -370,26 +370,26 @@ async def sab_remove(it, user: discord.Member, amount: float):
     supabase.table("profiles").update(p).eq("user_id", str(user.id)).execute()
     await it.response.send_message(f"✅ Removed {amount} SAB from {user.display_name}")
 
-@bot.tree.command(name="reset", description="Admin: Reset economy data")
+@bot.tree.command(name="reset", description="Admin: Fully wipe all economy data (balance, holdings, profit)")
 @app_commands.checks.has_role(ADMIN_ROLE_ID)
 async def reset(it, user: discord.Member = None):
     if user:
         p = get_profile(str(user.id))
-        p['sab_balance'] = 1000.0
+        p['sab_balance'] = 0.0
         p['portfolio'] = {k: 0.0 for k in COINS}
         p['portfolio_cost_basis'] = {k: 0.0 for k in COINS}
         supabase.table("profiles").update(p).eq("user_id", str(user.id)).execute()
-        return await it.response.send_message(f"✅ Reset data for {user.display_name}")
+        return await it.response.send_message(f"⚠️ Fully reset all data for {user.display_name}")
 
     profiles = supabase.table("profiles").select("user_id").execute()
     for row in profiles.data or []:
         uid = str(row.get("user_id"))
         p = get_profile(uid)
-        p['sab_balance'] = 1000.0
+        p['sab_balance'] = 0.0
         p['portfolio'] = {k: 0.0 for k in COINS}
         p['portfolio_cost_basis'] = {k: 0.0 for k in COINS}
         supabase.table("profiles").update(p).eq("user_id", uid).execute()
-    await it.response.send_message("⚠️ Economy reset for ALL users")
+    await it.response.send_message("⚠️ Fully reset ALL users data")
 
 @bot.tree.command(name="deposit", description="Create a deposit ticket")
 async def deposit(it):
