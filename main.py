@@ -103,7 +103,27 @@ class ChartView(ui.View):
                     }
                 }
                 
-                chart_url = f"https://quickchart.io/chart?bkg=rgb(43,45,49)&w=500&h=250&c={urllib.parse.quote(json.dumps(config))}"
+                chart_url = None
+                try:
+                    qc_res = requests.post(
+                        "https://quickchart.io/chart/create",
+                        json={
+                            "chart": config,
+                            "backgroundColor": "rgb(43,45,49)",
+                            "width": 500,
+                            "height": 250,
+                            "format": "png",
+                            "shortUrl": True
+                        },
+                        timeout=8
+                    )
+                    if qc_res.ok:
+                        qc_json = qc_res.json()
+                        short_url = qc_json.get("shortUrl") or qc_json.get("url")
+                        if isinstance(short_url, str) and short_url.startswith("http") and len(short_url) <= 2048:
+                            chart_url = short_url
+                except Exception:
+                    chart_url = None
                 
                 # Portfolio Info
                 p = get_profile(str(self.user_id))
@@ -128,7 +148,8 @@ class ChartView(ui.View):
                 )
                 embed.add_field(name="Total Profit", value=profit_text, inline=False)
                 
-                embed.set_image(url=chart_url)
+                if chart_url:
+                    embed.set_image(url=chart_url)
                 await it.edit_original_response(embed=embed, view=self)
             else:
                 await it.followup.send("⚠️ API Limit reached.", ephemeral=True)
