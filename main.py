@@ -130,6 +130,12 @@ class AllChartsView(ui.View):
         super().__init__(timeout=None)
         self.bot, self.user_id, self.current_days = bot_instance, user_id, current_days
 
+    async def interaction_check(self, it: discord.Interaction) -> bool:
+        if it.user.id != self.user_id:
+            await it.response.send_message("❌ This is not your chart view.", ephemeral=True)
+            return False
+        return True
+
     async def update_all_charts(self, it: discord.Interaction, days: int, label: str):
         if not it.response.is_done(): await it.response.defer()
         self.current_days = days
@@ -181,12 +187,12 @@ class AllChartsView(ui.View):
                 rows_by_coin[coin_key] = await fetch_coin_row(coin_key, coin_data)
 
         rows = list(rows_by_coin.values())
-        rows.sort(key=lambda x: x['current_val_sab'], reverse=True)
+        rows.sort(key=lambda x: x['end_price'], reverse=True)
         embed = discord.Embed(title="All Coin Markets", color=0x5865F2)
 
-        for row in rows:
+        for rank, row in enumerate(rows[:10], start=1):
             c = COINS[row["coin_key"]]
-            field_name = f"{c['emoji']} {c['name']} ({c['symbol']})"
+            field_name = f"{rank}. {c['emoji']} {c['name']} ({c['symbol']})"
             change_line = f"`{row['pct_change']:+.2f}%`" if row.get("has_valid_history") and row.get("pct_change") is not None else "`FAILED API ⚠️`"
             field_val = (
                 f"Price: **€{format_price(row['end_price'] or 0)}**\n"
