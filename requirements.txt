@@ -5,3 +5,4 @@ python-dotenv
 requests
 cloudscraper
 beautifulsoup4
+google-generativeai
