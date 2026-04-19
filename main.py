@@ -1,4 +1,4 @@
-import os, discord, requests, json, urllib.parse
+import os, discord, requests, json, urllib.parse, asyncio, time
 from discord import app_commands, ui
 from discord.ext import tasks
 from supabase import create_client, Client
@@ -23,6 +23,7 @@ COINS = {
     "KETUPAT": {"symbol": "SHIB", "color": "255, 0, 0", "emoji": "<:KETUPAT:1494996070303006793>", "name": "Ketupat"},
     "TANG": {"symbol": "PEPE", "color": "61, 148, 33", "emoji": "<:TANG:1494995850831728701>", "name": "Tang"}
 }
+ALL_CHARTS_COOLDOWNS = {}
 
 def get_profile(uid: str):
     res = supabase.table("profiles").select("*").eq("user_id", uid).execute()
@@ -135,47 +136,65 @@ class AllChartsView(ui.View):
         limit = 24 if days <= 1 else days
         endpoint = "histohour" if days <= 1 else "histoday"
         profile = get_profile(str(it.user.id))
-        rows = []
+        deadline = time.time() + 30
+        rows_by_coin = {}
 
-        for coin_key, coin_data in COINS.items():
+        async def fetch_coin_row(coin_key, coin_data):
             symbol = coin_data['symbol']
+            fallback_price = float(self.bot.market_prices.get(symbol, {}).get('eur') or 0)
+            row = {
+                "coin_key": coin_key,
+                "end_price": fallback_price,
+                "pct_change": None,
+                "amt_owned": profile['portfolio'].get(coin_key, 0),
+                "current_val_sab": 0,
+                "has_valid_history": False
+            }
             url = f"https://min-api.cryptocompare.com/data/v2/{endpoint}?fsym={symbol}&tsym=EUR&limit={limit}"
             try:
-                r = requests.get(url).json()
-                if r.get('Response') != "Success": continue
-                data_points = r.get('Data', {}).get('Data', [])
-                prices = [d.get('close', 0) for d in data_points if d.get('close') is not None]
-                if len(prices) < 2: continue
-                start_price, end_price = prices[0], prices[-1]
-                if start_price == 0: continue
-                pct_change = ((end_price - start_price) / start_price) * 100
-                amt_owned = profile['portfolio'].get(coin_key, 0)
-                current_val_sab = amt_owned * end_price
-                rows.append({
-                    "coin_key": coin_key,
-                    "end_price": end_price,
-                    "pct_change": pct_change,
-                    "amt_owned": amt_owned,
-                    "current_val_sab": current_val_sab
-                })
-            except: continue
+                r = requests.get(url, timeout=5).json()
+                if r.get('Response') == "Success":
+                    data_points = r.get('Data', {}).get('Data', [])
+                    prices = [d.get('close') for d in data_points if d.get('close') is not None]
+                    if len(prices) >= 2 and prices[0] != 0:
+                        start_price, end_price = prices[0], prices[-1]
+                        row["end_price"] = float(end_price or fallback_price or 0)
+                        row["pct_change"] = ((end_price - start_price) / start_price) * 100
+                        row["has_valid_history"] = True
+            except:
+                pass
+            row["current_val_sab"] = row["amt_owned"] * row["end_price"]
+            return row
 
-        rows.sort(key=lambda x: x['end_price'], reverse=True)
+        while time.time() < deadline:
+            for coin_key, coin_data in COINS.items():
+                if rows_by_coin.get(coin_key, {}).get("has_valid_history"):
+                    continue
+                rows_by_coin[coin_key] = await fetch_coin_row(coin_key, coin_data)
+            if len(rows_by_coin) == len(COINS) and all(r.get("has_valid_history") for r in rows_by_coin.values()):
+                break
+            if time.time() < deadline:
+                await asyncio.sleep(3)
+
+        for coin_key, coin_data in COINS.items():
+            if coin_key not in rows_by_coin:
+                rows_by_coin[coin_key] = await fetch_coin_row(coin_key, coin_data)
+
+        rows = list(rows_by_coin.values())
+        rows.sort(key=lambda x: x['current_val_sab'], reverse=True)
         embed = discord.Embed(title="All Coin Markets", color=0x5865F2)
 
-        if not rows:
-            embed.description = "⚠️ Could not load market data right now."
-        else:
-            for row in rows[:10]:
-                c = COINS[row["coin_key"]]
-                field_name = f"{c['emoji']} {c['name']} ({c['symbol']})"
-                field_val = (
-                    f"Price: **€{format_price(row['end_price'])}**\n"
-                    f"{label} Change: `{row['pct_change']:+.2f}%`\n"
-                    f"Owned: `{row['amt_owned']:,.4f}`\n"
-                    f"Value: `{row['current_val_sab']:,.2f} SAB`"
-                )
-                embed.add_field(name=field_name, value=field_val, inline=False)
+        for row in rows:
+            c = COINS[row["coin_key"]]
+            field_name = f"{c['emoji']} {c['name']} ({c['symbol']})"
+            change_line = f"`{row['pct_change']:+.2f}%`" if row.get("has_valid_history") and row.get("pct_change") is not None else "`FAILED API ⚠️`"
+            field_val = (
+                f"Price: **€{format_price(row['end_price'] or 0)}**\n"
+                f"{label} Change: {change_line}\n"
+                f"Owned: `{row['amt_owned']:,.4f}`\n"
+                f"Value: `{row['current_val_sab']:,.2f} SAB`"
+            )
+            embed.add_field(name=field_name, value=field_val, inline=False)
 
         try:
             await it.edit_original_response(embed=embed, view=self)
@@ -234,6 +253,17 @@ async def chart(it: discord.Interaction, coin: str):
 
 @bot.tree.command(name="all_charts")
 async def all_charts(it: discord.Interaction):
+    cooldown_seconds = 3600
+    now = time.time()
+    user_id = it.user.id
+    last_used = ALL_CHARTS_COOLDOWNS.get(user_id, 0)
+    remaining = cooldown_seconds - (now - last_used)
+    if remaining > 0:
+        mins = int(remaining // 60)
+        secs = int(remaining % 60)
+        wait_text = f"{mins}m {secs}s" if mins else f"{secs}s"
+        return await it.response.send_message(f"⏳ You can use `/all_charts` again in `{wait_text}`.", ephemeral=True)
+    ALL_CHARTS_COOLDOWNS[user_id] = now
     view = AllChartsView(bot, it.user.id)
     await view.update_all_charts(it, 7, "7d")
 
