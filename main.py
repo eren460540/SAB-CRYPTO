@@ -268,7 +268,7 @@ class SAB_Bot(discord.Client):
 
 bot = SAB_Bot()
 
-@bot.tree.command(name="chart")
+@bot.tree.command(name="chart", description="View a coin’s market data and your position")
 @app_commands.autocomplete(coin=coin_autocomplete)
 async def chart(it: discord.Interaction, coin: str):
     coin_key = coin.upper()
@@ -276,7 +276,7 @@ async def chart(it: discord.Interaction, coin: str):
     view = ChartView(coin_key, bot, it.user.id)
     await view.update_chart(it, 7, "7d")
 
-@bot.tree.command(name="all_charts")
+@bot.tree.command(name="all_charts", description="View all coins ranked by value with your holdings")
 async def all_charts(it: discord.Interaction):
     cooldown_seconds = 3600
     now = time.time()
@@ -292,7 +292,7 @@ async def all_charts(it: discord.Interaction):
     view = AllChartsView(bot, it.user.id)
     await view.update_all_charts(it, 7, "7d")
 
-@bot.tree.command(name="buy")
+@bot.tree.command(name="buy", description="Buy a coin using your SAB balance")
 @app_commands.autocomplete(coin=coin_autocomplete)
 async def buy(it: discord.Interaction, coin: str, amount: str):
     coin_key = coin.upper()
@@ -314,7 +314,7 @@ async def buy(it: discord.Interaction, coin: str, amount: str):
         await it.response.send_message(f"✅ Purchased {c_amt:,.6f} {coin_key} for {spend:,.2f} SAB")
     except: await it.response.send_message("❌ Enter a valid number or percentage (e.g. 50%)", ephemeral=True)
 
-@bot.tree.command(name="sell")
+@bot.tree.command(name="sell", description="Sell a coin for SAB")
 @app_commands.autocomplete(coin=coin_autocomplete)
 async def sell(it: discord.Interaction, coin: str, amount: str):
     coin_key = coin.upper()
@@ -337,7 +337,7 @@ async def sell(it: discord.Interaction, coin: str, amount: str):
         await it.response.send_message(f"✅ Sold {sell_amount:,.6f} {coin_key} for {gain:,.2f} SAB")
     except: await it.response.send_message("❌ Error processing sale.", ephemeral=True)
 
-@bot.tree.command(name="wallet")
+@bot.tree.command(name="wallet", description="View your SAB balance and holdings")
 async def wallet(it: discord.Interaction, user: discord.Member = None):
     t = user or it.user
     p = get_profile(str(t.id))
@@ -354,7 +354,7 @@ async def wallet(it: discord.Interaction, user: discord.Member = None):
     emb.add_field(name="Net Worth", value=f"**{net:,.2f} SAB**", inline=False)
     await it.response.send_message(embed=emb)
 
-@bot.tree.command(name="add_sab")
+@bot.tree.command(name="add_sab", description="Admin: Add SAB to a user")
 @app_commands.checks.has_role(ADMIN_ROLE_ID)
 async def add_sab(it, user: discord.Member, amount: float):
     p = get_profile(str(user.id))
@@ -362,14 +362,43 @@ async def add_sab(it, user: discord.Member, amount: float):
     supabase.table("profiles").update(p).eq("user_id", str(user.id)).execute()
     await it.response.send_message(f"✅ Added {amount} SAB to {user.display_name}")
 
-@bot.tree.command(name="deposit")
+@bot.tree.command(name="sab_remove", description="Admin: Remove SAB from a user")
+@app_commands.checks.has_role(ADMIN_ROLE_ID)
+async def sab_remove(it, user: discord.Member, amount: float):
+    p = get_profile(str(user.id))
+    p['sab_balance'] = max(0.0, p['sab_balance'] - amount)
+    supabase.table("profiles").update(p).eq("user_id", str(user.id)).execute()
+    await it.response.send_message(f"✅ Removed {amount} SAB from {user.display_name}")
+
+@bot.tree.command(name="reset", description="Admin: Reset economy data")
+@app_commands.checks.has_role(ADMIN_ROLE_ID)
+async def reset(it, user: discord.Member = None):
+    if user:
+        p = get_profile(str(user.id))
+        p['sab_balance'] = 1000.0
+        p['portfolio'] = {k: 0.0 for k in COINS}
+        p['portfolio_cost_basis'] = {k: 0.0 for k in COINS}
+        supabase.table("profiles").update(p).eq("user_id", str(user.id)).execute()
+        return await it.response.send_message(f"✅ Reset data for {user.display_name}")
+
+    profiles = supabase.table("profiles").select("user_id").execute()
+    for row in profiles.data or []:
+        uid = str(row.get("user_id"))
+        p = get_profile(uid)
+        p['sab_balance'] = 1000.0
+        p['portfolio'] = {k: 0.0 for k in COINS}
+        p['portfolio_cost_basis'] = {k: 0.0 for k in COINS}
+        supabase.table("profiles").update(p).eq("user_id", uid).execute()
+    await it.response.send_message("⚠️ Economy reset for ALL users")
+
+@bot.tree.command(name="deposit", description="Create a deposit ticket")
 async def deposit(it):
     g, cat, adm = it.guild, it.guild.get_channel(TICKET_CATEGORY_ID), it.guild.get_role(ADMIN_ROLE_ID)
     ov = {g.default_role: discord.PermissionOverwrite(view_channel=False), it.user: discord.PermissionOverwrite(view_channel=True), adm: discord.PermissionOverwrite(view_channel=True)}
     ch = await g.create_text_channel(f"dep-{it.user.name}", category=cat, overwrites=ov)
     await it.response.send_message(f"✅ Ticket created: {ch.mention}", ephemeral=True)
 
-@bot.tree.command(name="withdraw")
+@bot.tree.command(name="withdraw", description="Create a withdrawal ticket")
 async def withdraw(it):
     g, cat, adm = it.guild, it.guild.get_channel(TICKET_CATEGORY_ID), it.guild.get_role(ADMIN_ROLE_ID)
     ov = {g.default_role: discord.PermissionOverwrite(view_channel=False), it.user: discord.PermissionOverwrite(view_channel=True), adm: discord.PermissionOverwrite(view_channel=True)}
