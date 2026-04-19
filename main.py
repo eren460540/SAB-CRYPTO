@@ -124,6 +124,76 @@ class ChartView(ui.View):
     @ui.button(label="1Y", style=discord.ButtonStyle.secondary)
     async def btn_1y(self, it, btn): await self.update_chart(it, 365, "1y")
 
+class AllChartsView(ui.View):
+    def __init__(self, bot_instance, user_id, current_days=7):
+        super().__init__(timeout=None)
+        self.bot, self.user_id, self.current_days = bot_instance, user_id, current_days
+
+    async def update_all_charts(self, it: discord.Interaction, days: int, label: str):
+        if not it.response.is_done(): await it.response.defer()
+        self.current_days = days
+        limit = 24 if days <= 1 else days
+        endpoint = "histohour" if days <= 1 else "histoday"
+        profile = get_profile(str(it.user.id))
+        rows = []
+
+        for coin_key, coin_data in COINS.items():
+            symbol = coin_data['symbol']
+            url = f"https://min-api.cryptocompare.com/data/v2/{endpoint}?fsym={symbol}&tsym=EUR&limit={limit}"
+            try:
+                r = requests.get(url).json()
+                if r.get('Response') != "Success": continue
+                data_points = r.get('Data', {}).get('Data', [])
+                prices = [d.get('close', 0) for d in data_points if d.get('close') is not None]
+                if len(prices) < 2: continue
+                start_price, end_price = prices[0], prices[-1]
+                if start_price == 0: continue
+                pct_change = ((end_price - start_price) / start_price) * 100
+                amt_owned = profile['portfolio'].get(coin_key, 0)
+                current_val_sab = amt_owned * end_price
+                rows.append({
+                    "coin_key": coin_key,
+                    "end_price": end_price,
+                    "pct_change": pct_change,
+                    "amt_owned": amt_owned,
+                    "current_val_sab": current_val_sab
+                })
+            except: continue
+
+        rows.sort(key=lambda x: x['end_price'], reverse=True)
+        embed = discord.Embed(title="All Coin Markets", color=0x5865F2)
+
+        if not rows:
+            embed.description = "⚠️ Could not load market data right now."
+        else:
+            for row in rows[:10]:
+                c = COINS[row["coin_key"]]
+                field_name = f"{c['emoji']} {c['name']} ({c['symbol']})"
+                field_val = (
+                    f"Price: **€{format_price(row['end_price'])}**\n"
+                    f"{label} Change: `{row['pct_change']:+.2f}%`\n"
+                    f"Owned: `{row['amt_owned']:,.4f}`\n"
+                    f"Value: `{row['current_val_sab']:,.2f} SAB`"
+                )
+                embed.add_field(name=field_name, value=field_val, inline=False)
+
+        try:
+            await it.edit_original_response(embed=embed, view=self)
+        except Exception as e:
+            if it.response.is_done():
+                await it.followup.send(f"❌ All charts error: {str(e)}", ephemeral=True)
+            else:
+                await it.response.send_message(f"❌ All charts error: {str(e)}", ephemeral=True)
+
+    @ui.button(label="24H", style=discord.ButtonStyle.secondary)
+    async def btn_24h(self, it, btn): await self.update_all_charts(it, 1, "24h")
+    @ui.button(label="7D", style=discord.ButtonStyle.secondary)
+    async def btn_7d(self, it, btn): await self.update_all_charts(it, 7, "7d")
+    @ui.button(label="1M", style=discord.ButtonStyle.secondary)
+    async def btn_1m(self, it, btn): await self.update_all_charts(it, 30, "1m")
+    @ui.button(label="1Y", style=discord.ButtonStyle.secondary)
+    async def btn_1y(self, it, btn): await self.update_all_charts(it, 365, "1y")
+
 class SAB_Bot(discord.Client):
     def __init__(self):
         super().__init__(intents=discord.Intents.all())
@@ -161,6 +231,11 @@ async def chart(it: discord.Interaction, coin: str):
     if coin_key not in COINS: return await it.response.send_message("❌ Invalid Coin", ephemeral=True)
     view = ChartView(coin_key, bot, it.user.id)
     await view.update_chart(it, 7, "7d")
+
+@bot.tree.command(name="all_charts")
+async def all_charts(it: discord.Interaction):
+    view = AllChartsView(bot, it.user.id)
+    await view.update_all_charts(it, 7, "7d")
 
 @bot.tree.command(name="buy")
 @app_commands.autocomplete(coin=coin_autocomplete)
