@@ -375,6 +375,70 @@ async def wallet(it: discord.Interaction, user: discord.Member = None):
     emb.add_field(name="Net Worth", value=f"**{net:,.2f} SAB**", inline=False)
     await it.response.send_message(embed=emb)
 
+@bot.tree.command(name="help", description="Show all bot commands and how they work")
+async def help_cmd(it: discord.Interaction):
+    embed = discord.Embed(
+        title="📘 SAB Bot Help Center",
+        description=(
+            "Welcome to **SAB Bot** 💎\n\n"
+            "Here’s a full guide to every feature so you can easily understand how everything works."
+        ),
+        color=0x5865F2
+    )
+
+    embed.add_field(
+        name="📈 Trading Commands",
+        value=(
+            "**`/chart <coin>`** — View a coin’s market chart, price movement, and your current position.\n"
+            "**`/all_charts`** — See all tracked coins ranked by value, including your holdings.\n"
+            "**`/buy <coin> <amount>`** — Buy a coin using your SAB balance.\n"
+            "**`/sell <coin> <amount>`** — Sell a coin from your holdings for SAB."
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="🏦 Wallet & Economy",
+        value=(
+            "**`/wallet`** — Check your SAB balance, holdings, and total net worth.\n"
+            "Your wallet shows how much **SAB COIN** you own and the current value of your assets."
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="💳 Deposit & Withdraw",
+        value=(
+            "**`/deposit`** — Creates a deposit ticket for you.\n"
+            "**`/withdraw`** — Creates a withdrawal ticket for you.\n\n"
+            "After using these commands, **please wait for a staff member to come and handle it** ⏳"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="🛠️ Admin Commands",
+        value=(
+            "**`/add_sab`** — Add SAB to a user.\n"
+            "**`/remove_sab`** — Fully reset one user's balance, holdings, and profit.\n"
+            "**`/reset`** — Fully wipe economy data for one user or everyone."
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="🧠 SAB Coin Value",
+        value=(
+            "**1€ worth of brainrot = 1 SAB COIN** 💶➡️🪙\n\n"
+            "The value is **decided by the owners**, who are **highly experienced**.\n"
+            "The **current values are set by the owners**."
+        ),
+        inline=False
+    )
+
+    embed.set_footer(text="SAB Bot • Easy to use • Powered for the community")
+    await it.response.send_message(embed=embed, ephemeral=True)
+
 @bot.tree.command(name="add_sab", description="Admin: Add SAB to a user")
 @app_commands.checks.has_role(ADMIN_ROLE_ID)
 async def add_sab(it, user: discord.Member, amount: float):
