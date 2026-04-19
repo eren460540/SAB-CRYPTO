@@ -28,10 +28,20 @@ ALL_CHARTS_COOLDOWNS = {}
 def get_profile(uid: str):
     res = supabase.table("profiles").select("*").eq("user_id", uid).execute()
     if not res.data:
-        p = {"user_id": uid, "sab_balance": 1000.0, "portfolio": {k: 0.0 for k in COINS}}
+        p = {
+            "user_id": uid,
+            "sab_balance": 1000.0,
+            "portfolio": {k: 0.0 for k in COINS},
+            "portfolio_cost_basis": {k: 0.0 for k in COINS}
+        }
         supabase.table("profiles").insert(p).execute()
         return p
-    return res.data[0]
+    p = res.data[0]
+    if not isinstance(p.get("portfolio"), dict):
+        p["portfolio"] = {}
+    if not isinstance(p.get("portfolio_cost_basis"), dict):
+        p["portfolio_cost_basis"] = {}
+    return p
 
 def format_price(val):
     return f"{val:,.8f}".rstrip('0').rstrip('.')
@@ -99,6 +109,9 @@ class ChartView(ui.View):
                 p = get_profile(str(self.user_id))
                 amt_owned = p['portfolio'].get(self.coin, 0)
                 current_val_sab = amt_owned * end_price
+                cost_basis = p.get('portfolio_cost_basis', {}).get(self.coin, 0.0)
+                profit_sab = current_val_sab - cost_basis
+                profit_pct = (profit_sab / cost_basis * 100) if cost_basis > 0 else 0
                 
                 embed = discord.Embed(title=f"{COINS[self.coin]['emoji']} {COINS[self.coin]['name']} Market", color=embed_color)
                 embed.add_field(name="Current Price", value=f"**€{format_price(end_price)}**", inline=True)
@@ -108,6 +121,12 @@ class ChartView(ui.View):
                 port_text = f"💰 **Owned:** `{amt_owned:,.4f}`\n"
                 port_text += f"💎 **Value:** `{current_val_sab:,.2f} SAB`"
                 embed.add_field(name="Your Position", value=port_text, inline=False)
+                profit_text = (
+                    f"💰 Bought: `{cost_basis:,.2f} SAB`\n"
+                    f"📊 Current: `{current_val_sab:,.2f} SAB`\n"
+                    f"📈 Profit: `{profit_sab:+,.2f} SAB ({profit_pct:+.2f}%)`"
+                )
+                embed.add_field(name="Total Profit", value=profit_text, inline=False)
                 
                 embed.set_image(url=chart_url)
                 await it.edit_original_response(embed=embed, view=self)
@@ -289,6 +308,8 @@ async def buy(it: discord.Interaction, coin: str, amount: str):
         c_amt = spend / price
         p['sab_balance'] -= spend
         p['portfolio'][coin_key] = p['portfolio'].get(coin_key, 0) + c_amt
+        p.setdefault('portfolio_cost_basis', {})
+        p['portfolio_cost_basis'][coin_key] = p.get('portfolio_cost_basis', {}).get(coin_key, 0.0) + spend
         supabase.table("profiles").update(p).eq("user_id", str(it.user.id)).execute()
         await it.response.send_message(f"✅ Purchased {c_amt:,.6f} {coin_key} for {spend:,.2f} SAB")
     except: await it.response.send_message("❌ Enter a valid number or percentage (e.g. 50%)", ephemeral=True)
@@ -301,15 +322,19 @@ async def sell(it: discord.Interaction, coin: str, amount: str):
     price = bot.market_prices.get(COINS[coin_key]['symbol'], {}).get('eur', 0)
     p = get_profile(str(it.user.id))
     try:
-        val, cur = amount.strip(), p['portfolio'].get(coin_key, 0)
+        val = amount.strip()
+        owned = p['portfolio'].get(coin_key, 0)
         num = float(val.replace("%", ""))
-        s_amt = (cur * (num/100)) if "%" in val else num
-        if s_amt > cur or s_amt <= 0: return await it.response.send_message(f"❌ You only have {cur:,.6f} {coin_key}", ephemeral=True)
-        gain = s_amt * price
+        sell_amount = (owned * (num/100)) if "%" in val else num
+        if sell_amount > owned or sell_amount <= 0: return await it.response.send_message(f"❌ You only have {owned:,.6f} {coin_key}", ephemeral=True)
+        sell_ratio = sell_amount / owned if owned > 0 else 0
+        gain = sell_amount * price
         p['sab_balance'] += gain
-        p['portfolio'][coin_key] -= s_amt
+        p['portfolio'][coin_key] -= sell_amount
+        p.setdefault('portfolio_cost_basis', {})
+        p['portfolio_cost_basis'][coin_key] = p.get('portfolio_cost_basis', {}).get(coin_key, 0.0) * (1 - sell_ratio)
         supabase.table("profiles").update(p).eq("user_id", str(it.user.id)).execute()
-        await it.response.send_message(f"✅ Sold {s_amt:,.6f} {coin_key} for {gain:,.2f} SAB")
+        await it.response.send_message(f"✅ Sold {sell_amount:,.6f} {coin_key} for {gain:,.2f} SAB")
     except: await it.response.send_message("❌ Error processing sale.", ephemeral=True)
 
 @bot.tree.command(name="wallet")
